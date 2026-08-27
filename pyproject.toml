@@ -1,0 +1,53 @@
+[project]
+name = "experiment"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.4.2",
+    "h5py>=3.16.0",
+    "mamba-ssm>=2.3",
+    "numpy>=2.5.2",
+    "opencv-python>=5.0.0.93",
+    "polars>=1.43.2",
+    "pyarrow>=25.0.1",
+    "scipy>=1.18.1",
+    "torch>=2.13.0",
+    # SegFace's vendored reference implementation builds its backbone from
+    # torchvision.models. It arrived transitively via mambavision; removing that
+    # dependency broke `src.cli clips` silently, since the import only happens
+    # when a mask is actually built.
+    "torchvision>=0.28.0",
+    "wfdb>=4.3.1",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+override-dependencies = ["mamba-ssm>=2.3"]
+no-build-isolation-package = ["mamba-ssm"]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+]
+
+[tool.ruff]
+# Vendored upstream: src/aggregation/segface is a copy of the SegFace reference
+# implementation and tools/rPPG-Toolbox is a third-party checkout. Reformatting
+# either would fork them from upstream for no benefit, so they are not linted.
+# datasets/ holds data plus the scripts UBFC ships with its download.
+extend-exclude = ["src/aggregation/segface", "tools/rPPG-Toolbox", "datasets"]
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B", "RUF"]
+
+[tool.pytest.ini_options]
+# np.matrix is deprecated but the vendored POS implementation predates that, and
+# it is upstream code this project deliberately does not fork. One line beats
+# 1265 identical warnings on every run.
+filterwarnings = [
+    "ignore:the matrix subclass is not the recommended way:PendingDeprecationWarning",
+]

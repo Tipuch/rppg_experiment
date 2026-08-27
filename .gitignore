@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# This repository publishes source only. Everything below is excluded on
+# purpose, and two of the entries are not merely housekeeping:
+#
+#   datasets/   human-subject facial video and health biomarkers. UBFC-rPPG
+#               ships a data use agreement and forbids reproducing facial
+#               images for two of its subjects in any publication; MCD-rPPG
+#               pairs 600 people's faces with blood pressure, cholesterol and
+#               glycated haemoglobin. None of it is ours to redistribute.
+#   research/   copyrighted PDFs of the papers this work is reconstructed from.
+#
+# Obtain both from their original sources; DATASETS.md records where.
+# ---------------------------------------------------------------------------
+
+# Data and derived artefacts
+datasets/
+build/
+models/
+research/
+
+# Vendored third-party checkouts, each with its own .git. tools/*.py is ours
+# and is tracked.
+tools/rPPG-Toolbox/
+tools/PhysBench/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+dist/
+wheels/
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Notebooks and scratch output
+*.ipynb
+*.png
+*.pt
+*.npy
+*.parquet
+*.log
