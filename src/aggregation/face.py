@@ -21,8 +21,8 @@ SCORE_THRESHOLD = 0.7
 # forehead and cheeks (strongest rPPG regions) survive the crop.
 #
 # rPPG-Toolbox, which all three source papers used, enlarges by LARGE_BOX_COEF=1.5
-# -- equivalent to BOX_PAD=0.5 here. 0.25 is a deliberate deviation, on the
-# grounds that a tighter crop carries fewer non-skin pixels and this pipeline
+# -- equivalent to BOX_PAD=0.5 here. 0.25 is a intentional deviation, on the
+# reasons that a tighter crop carries fewer non-skin pixels and this pipeline
 # already has a skin mask and PGA's Gaussian prior doing that job. Which is
 # actually better is measurable with POS, which needs no training; `pad` exists so
 # that measurement can be run without editing this file.
@@ -45,7 +45,7 @@ def median_face_box(
     """
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
-            f"YuNet model missing at {MODEL_PATH}. Without it every crop silently "
+            f"YuNet model missing at {MODEL_PATH}. Without it every crop invisibly "
             "falls back to a centre square with no face ROI."
         )
     if not sample_frames:

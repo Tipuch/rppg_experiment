@@ -1,4 +1,4 @@
-"""Signal derivation: the estimators the whole audit rests on."""
+"""Signal derivation: the estimators the whole audit depends on."""
 
 from __future__ import annotations
 

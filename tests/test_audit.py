@@ -1,4 +1,4 @@
-"""Spectral audit: the tool that decides whether a dataset is usable at all.
+"""Spectral audit: the tool that determines whether a dataset is usable at all.
 
 It has to reject a spectrum with no cardiac peak. Getting that wrong in the
 permissive direction would wave through a corpus with no signal -- which is the
@@ -57,7 +57,7 @@ def test_band_edge_is_rejected_even_when_prominent() -> None:
 
 
 def test_pulse_at_wrong_rate_is_rejected() -> None:
-    """A real peak that disagrees with the label is not a usable clip."""
+    """A real peak that conflicts with the label is not a usable clip."""
     r = analyse_trace(clean_pulse(60.0), 120.0)
     assert not r["has_pulse"]
     assert r["abs_err"] > 10.0

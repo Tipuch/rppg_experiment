@@ -1,24 +1,24 @@
 """Complex-valued linear projection. CFMamba Eqs. 10-11.
 
-`complex_activation` lives here too, because it is the other half of what FreTS
+`complex_activation` resides here too, because it is the other half of what FreTS
 calls a FreMLP: a complex linear followed by an activation applied separately to
 the real and imaginary parts. CFMamba's Eqs. 10-11 describe only the linear half
 and Section 3.3 names no activation at all, which -- tested -- leaves the whole
 DF-FFN linear to float32 precision (affine error 2.2e-07 against 6.4e-01 for an
-ordinary two-layer MLP). A "feed-forward network" that is one linear operator, and
+normal two-layer MLP). A "feed-forward network" that is one linear operator, and
 whose ablation is worth 0.36 against 0.59 MAE, is an omission rather than a design.
-FreTS Eq. 7 is where the activation goes, and FreTS is the work CFMamba cites for
+FreTS Eq. 7 is where the activation goes, and FreTS is the work CFMamba references for
 the operation.
 
 Both halves of the DF-FFN project in the frequency domain, where a feature is a
-complex number carrying magnitude *and* phase. A real-valued Linear applied to the
+complex number bringing magnitude *and* phase. A real-valued Linear applied to the
 real and imaginary parts separately would treat them as two unrelated channels and
 throw the phase relationship away. Complex multiplication is what couples them:
 
     (a + ib)(w + iv) = (aw - bv) + i(av + bw)
 
 which is Eqs. 10-11 exactly. Its feasibility for spectral MLPs is the result
-CFMamba cites from FreTS (Yi et al., NeurIPS 36).
+CFMamba references from FreTS (Yi et al., NeurIPS 36).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from torch import nn
 
 # FreTS writes the activation as a generic sigma and its released implementation
 # uses ReLU. GELU is the default here instead: ReLU on an imaginary part zeroes
-# half the phase plane outright, and phase is what carries the timing of a pulse
+# half the phase plane directly, and phase is what carries the timing of a pulse
 # -- the thing the negative-Pearson term is scored on. GELU is smooth and leaves a
 # small negative tail, so a component near zero is attenuated rather than deleted.
 # Both are available; the choice is a one-line ablation.

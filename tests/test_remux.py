@@ -7,11 +7,11 @@ offset and `-ss` decodes forward from the start. Measured on this corpus, that i
 file is indexed, and it is **90% of the loader's per-window cost**. Keyframes are
 dense (one per 0.4 s), so this was never a keyframe problem.
 
-`-c copy` rewrites the container and leaves every video packet untouched, so the
+`-c copy` rewrites the container and leaves every video packet unchanged, so the
 decoded pixels must be identical. That is the property these tests pin, because a
 remux that changes one pixel is not acceptable on a 0.1-0.5 LSB signal.
 
-**The container has to stay AVI.** Measured: remuxing to MP4 or MKV silently drops
+**The container has to stay AVI.** Measured: remuxing to MP4 or MKV invisibly drops
 three frames on the 29.9167 fps clips -- a third of the corpus -- and the loss is
 mid-stream, not at the tail, so every frame after it shifts and the contact-PPG
 target desynchronises from the video. AVI-to-AVI drops nothing. An early check that
@@ -34,7 +34,7 @@ needs_data = pytest.mark.skipif(
 
 
 def test_output_keeps_the_stem_and_stays_avi(tmp_path) -> None:
-    """MP4 and MKV drop frames on this corpus; the extension is load-bearing."""
+    """MP4 and MKV drop frames on this corpus; the extension is essential."""
     out = remux_path(tmp_path, "mcd/1234_USBVideo_after")
     assert out.suffix == ".avi"
     assert out.parent == tmp_path
@@ -63,7 +63,7 @@ def clip() -> dict:
 
 @needs_data
 def test_the_source_really_is_unindexed(clip) -> None:
-    """The premise. If this ever fails, the remux is no longer needed."""
+    """The basis. If this ever fails, the remux is no longer needed."""
     assert not is_indexed(Path(clip["video_path"]))
 
 
@@ -82,7 +82,7 @@ def test_remuxing_makes_the_file_indexed(clip, tmp_path) -> None:
 def test_the_decoded_window_is_bit_identical(clip, tmp_path_factory, start, k) -> None:
     """The gate. `-c copy` must not alter a single pixel.
 
-    The grid is deliberately dense around 15-45 s: that is where the MP4 remux
+    The grid is intentionally dense around 15-45 s: that is where the MP4 remux
     corrupted the stream, and a sparser grid missed it.
     """
     from src.aggregation.remux import remux_clip
@@ -155,9 +155,9 @@ def test_rewriting_changes_nothing_but_the_path(clip, tmp_path) -> None:
 #
 # It did not, and it cost an epoch. MCD's contact PPG is located *from the video
 # path*: `load_ppg` requires the video to sit in a `video/` directory and reads its
-# `ppg_sync/<stem>.txt` sibling. Repointing `video_path` at build/mcd_remux broke
+# `ppg_sync/<stem>.txt` peer. Repointing `video_path` at build/mcd_remux broke
 # that lookup, `load_ppg` returned None, and `_waveform` fell back to returning
-# zeros -- silently. Nothing raised, every tensor kept its shape, and the run
+# zeros -- invisibly. Nothing raised, every tensor kept its shape, and the run
 # trained a full epoch against all-zero targets.
 #
 # The give-away in the logs was `train_time` pinned at exactly 1.000 (neg_pearson

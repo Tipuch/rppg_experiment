@@ -1,6 +1,6 @@
 """Single-video inference: checkpoint discovery, config recovery, stitch, beats.
 
-The forward pass is not covered here -- mamba_ssm has no CPU kernel, so it cannot
+The forward pass is not covered here -- Mamba-3's scan kernel has no CPU path, so it cannot
 run without a card. Everything around it can, and everything around it is where a
 silent wrong answer would come from: a checkpoint loaded with the wrong
 architecture, or a bpm read off a trace assembled incorrectly.
@@ -48,7 +48,7 @@ def test_latest_checkpoint_takes_the_newest(tmp_path):
 
 
 def test_latest_checkpoint_ignores_top_level_files(tmp_path):
-    """build/runs/best.pt predates the config payload and cannot be rebuilt."""
+    """build/runs/best.pt came before the config payload and cannot be rebuilt."""
     stray = tmp_path / "best.pt"
     stray.write_bytes(b"x")
     with pytest.raises(FileNotFoundError):

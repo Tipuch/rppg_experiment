@@ -1,6 +1,6 @@
 """The optimiser: which parameters get weight decay, and the shape of the schedule.
 
-Both are the kind of thing that silently costs a run. A learning-rate schedule
+Both are the kind of thing that invisibly costs a run. A learning-rate schedule
 stepped per epoch instead of per step is a completely different curve when an epoch
 is 109 steps in one configuration and 25,000 in another. Weight decay on the
 Gaussian band's centre frequency is a prior on heart rate wearing a regulariser's
@@ -42,15 +42,20 @@ def test_the_band_frequency_is_exempt_from_weight_decay() -> None:
     assert _group_of(optimiser, mask.theta_bw)["weight_decay"] == 0.0
 
 
-def test_mamba_state_parameters_are_exempt_even_though_a_log_is_2d() -> None:
-    """mamba_ssm marks A_log and D `_no_weight_decay`, and A_log is 2-D -- so a
-    rule based on dimension alone would decay it. The flag is what is honoured."""
+def test_mamba_state_parameters_are_exempt_even_though_the_biases_are_3d() -> None:
+    """Mamba-3 marks `dt_bias` and `D` `_no_weight_decay` itself. It does not mark
+    the B and C biases, and those are 3-D -- so a rule based on dimension alone
+    would decay them. Both are initialised to 1 and hold B and C away from zero
+    after the RMS norm, so decay there pulls the layer toward a degenerate
+    initialisation rather than toward a simpler function; mamba_layer.py sets the
+    flag and that is what is respected.
+    """
     model, _, optimiser, _ = _built()
     scan = model.blocks[0].mamba.mamba
-    assert scan.A_log.ndim == 2
-    assert getattr(scan.A_log, "_no_weight_decay", False)
-    assert _group_of(optimiser, scan.A_log)["weight_decay"] == 0.0
-    assert _group_of(optimiser, scan.D)["weight_decay"] == 0.0
+    for parameter in (scan.dt_bias, scan.D, scan.B_bias, scan.C_bias):
+        assert getattr(parameter, "_no_weight_decay", False)
+        assert _group_of(optimiser, parameter)["weight_decay"] == 0.0
+    assert scan.B_bias.ndim == 3
 
 
 def test_norms_and_biases_are_exempt_and_weights_are_not() -> None:
@@ -63,7 +68,7 @@ def test_norms_and_biases_are_exempt_and_weights_are_not() -> None:
 
 
 def test_every_trainable_parameter_lands_in_exactly_one_group() -> None:
-    """A parameter missing from the optimiser trains not at all, and nothing warns."""
+    """A parameter missing from the optimiser trains not at all, and nothing cautions."""
     model, _, optimiser, _ = _built()
     grouped = [p for g in optimiser.param_groups for p in g["params"]]
     ids = [id(p) for p in grouped]
@@ -97,7 +102,7 @@ def test_the_schedule_warms_up_then_decays() -> None:
 
 def test_the_first_step_is_not_the_full_learning_rate() -> None:
     """The point of the warmup: the largest and noisiest gradients of the run
-    arrive first, and a bare cosine schedule meets them at maximum lr."""
+    arrive first, and a plain cosine schedule meets them at maximum lr."""
     _, cfg, optimiser, _ = _built()
     assert optimiser.param_groups[0]["lr"] < 0.2 * cfg.lr
 

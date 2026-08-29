@@ -17,21 +17,21 @@ Confirmed by contrast against CLBP-300's indexed H.264 .mov, where seek cost is
 flat with depth (5 s 340 ms, 15 s 334 ms, 25 s 333 ms, 31 s 320 ms) against MCD's
 80 -> 1,449 ms over the same span.
 
-`-c copy` rewrites the container and copies every video packet verbatim, so the
+`-c copy` rewrites the container and copies every video packet unchanged, so the
 decoded pixels are unchanged. Measured over six clips spanning all three frame
 rates present (24.0, 29.916666, 30.0): frame counts identical, decoded windows
-bit-identical across an eight-point grid, and seek flat at 43-48 ms at every depth.
+exactly equal across an eight-point grid, and seek flat at 43-48 ms at every depth.
 One clip went from 1,449 ms to 44 ms.
 
-**The output must stay AVI.** Remuxing to MP4 or MKV silently drops three frames on
+**The output must stay AVI.** Remuxing to MP4 or MKV drops three frames without notice on
 the 29.9167 fps clips -- 1,200 of 3,600 -- and the loss is mid-stream rather than at
 the tail, so every frame after it shifts and the contact-PPG target desynchronises
 from the video. MP4 with `-fflags +genpts` drops them too. AVI-to-AVI drops nothing,
-because AVI's frame-index model tolerates the timestamps that MP4 and MKV reject.
-`tests/test_remux.py` pins that.
+because AVI's frame-index model accepts the timestamps that MP4 and MKV reject.
+`tests/test_remux.py` fixes that.
 
 The same missing metadata is why `probe` needs its `_duration_from_keyframes`
-fallback in `video.py`, which walks the whole keyframe index at ~650 ms per clip on
+fallback in `video.py`, which steps through the whole keyframe index at ~650 ms per clip on
 first touch in every worker. Indexed files make that branch dead.
 """
 
@@ -47,9 +47,9 @@ REMUX_DIR = Path("build/mcd_remux")
 
 
 def remux_path(out_dir: Path, clip_id: str) -> Path:
-    """Where a clip's rewritten container lives.
+    """Where a clip's rewritten container resides.
 
-    Stays `.avi` deliberately -- see the module docstring. The slug matches the
+    Stays `.avi` intentionally -- see the module docstring. The slug matches the
     scheme `src/model/clips.py` and `src/model/framecache.py` already use, so the
     three caches sort together and a clip is recognisable in any of them.
     """
@@ -101,8 +101,8 @@ def remux_clip(source: Path, out_dir: Path, clip_id: str) -> Path | None:
     destination = remux_path(out_dir, clip_id)
     partial = destination.with_suffix(".avi.partial")
 
-    # `-f avi` is not optional: the temporary name ends in .partial, and ffmpeg
-    # picks its muxer from the extension, so without it the write fails outright.
+    # `-f avi` is required: the temporary name ends in .partial, and ffmpeg
+    # picks its muxer from the extension, so without it the write fails directly.
     result = subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-i", str(source),
          "-c", "copy", "-map", "0:v:0", "-f", "avi", str(partial)],
@@ -124,7 +124,7 @@ def build(
     """Remux every clip in `manifest`. Resumable; skips what is already indexed.
 
     Only the container changes, so the manifest's `box_x`, `box_y`, `box_side` and
-    the cached SegFace masks all stay valid -- frame geometry is untouched.
+    the cached SegFace masks all stay valid -- frame geometry is unchanged.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -164,7 +164,7 @@ def rewrite_manifest(
 
     **`ppg_video_path` is added, holding the original location.** MCD's contact PPG
     is found *from the video path* -- `load_ppg` requires the video to sit in a
-    `video/` directory and reads its `ppg_sync/<stem>.txt` sibling. Repointing
+    `video/` directory and reads its `ppg_sync/<stem>.txt` peer. Repointing
     `video_path` alone therefore severs the label from its clip, `load_ppg` returns
     None, and `WindowDataset._waveform` falls back to zeros without raising: every
     tensor keeps its shape and a whole epoch trains against a flat target. That

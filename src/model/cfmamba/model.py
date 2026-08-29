@@ -6,7 +6,7 @@
       -> L x Block           (B, T, C)             Mamba+CAM, then DF-FFN
       -> Predictor           (B, T)                the BVP waveform
 
-Everything after PGA is a time series, which is the premise the whole design rests
+Everything after PGA is a time series, which is the basis the whole design depends
 on: RhythmMamba Section 4.5 measured that leaving spatial structure in the token
 sequence makes Mamba *worse* (4.90 MAE at 8x8 tokens against 3.54 at 1x1), because
 spatial information raises the dimensionality of the state transition without
@@ -14,7 +14,7 @@ adding anything the recurrence can use.
 
 Heart rate is never predicted. It is read off the returned waveform by band-pass
 and Welch PSD, exactly as both source papers do -- which is why a clip-level HR
-label is not needed for training and its known defects (DATASETS.md: five UBFC
+label is not needed for training and its known faults (DATASETS.md: five UBFC
 subjects with a broken HR column) cannot reach the loss.
 """
 
@@ -26,7 +26,14 @@ from torch import nn
 from .block import ChannelAdaptiveMambaBlock
 from .df_ffn import DualFrequencyFFN
 from .fusion_stem import FusionStem
-from .mamba_layer import DEFAULT_DIRECTION
+from .mamba_layer import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_D_STATE,
+    DEFAULT_DIRECTION,
+    DEFAULT_HEADDIM,
+    DEFAULT_MIMO_RANK,
+    DEFAULT_ROPE_FRACTION,
+)
 from .pga import PhysiologyGuidedAttention
 from .vanilla_ffn import VanillaFFN
 
@@ -39,7 +46,7 @@ DEFAULT_FPS = 30.0
 # Widths neither paper states. These are not guesses: they are the configuration
 # that reproduces both published cost figures -- 0.91M parameters and 80.82M
 # multiply-accumulates per frame -- to within 2% on each, once every module is
-# shaped the way the cited sources shape it. tests/test_budget.py is the gate and
+# shaped the way the referenced sources shape it. tests/test_budget.py is the gate and
 # records what else fits.
 DEFAULT_DIM = 80
 DEFAULT_DEPTH = 4
@@ -50,11 +57,11 @@ DEFAULT_STEM_DIVISOR = 5
 DEFAULT_FFN_RATIO = 2
 # CMamba's GDD-MLP expansion rate (its Appendix C.1), which CFMamba inherits
 # without naming a value -- CMamba sweeps it in a rasterised figure and the only
-# numeric "expansion rate" it prints, 1, belongs to a different module (M-Mamba's
+# numeric "expansion rate" it prints, 1, fits to a different module (M-Mamba's
 # linear, its A.2). 1.0 makes the hidden layer as wide as the stream, which is the
-# smallest value that is genuinely an *expansion* rather than a bottleneck and so
+# smallest value that is really an *expansion* rather than a bottleneck and so
 # matches CMamba's own word for it. It costs +5.0% against the published parameter
-# count; see tests/test_budget.py for what that trade buys and gives up.
+# count; see tests/test_budget.py for what that trade gains and gives up.
 DEFAULT_CAM_EXPANSION = 1.0
 
 
@@ -95,9 +102,12 @@ class CFMambaPhys(nn.Module):
         pts_mode: str = "channel",
         pts_bins: int = 64,
         ffn_activation: str | None = "gelu",
-        d_state: int = 16,
-        d_conv: int = 4,
+        d_state: int = DEFAULT_D_STATE,
+        headdim: int = DEFAULT_HEADDIM,
         expand: int = 2,
+        mimo_rank: int = DEFAULT_MIMO_RANK,
+        rope_fraction: float = DEFAULT_ROPE_FRACTION,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
         paths: int = 3,
         direction: str = DEFAULT_DIRECTION,
         cam_expansion: float = DEFAULT_CAM_EXPANSION,
@@ -141,8 +151,9 @@ class CFMambaPhys(nn.Module):
         self.blocks = nn.ModuleList(
             ChannelAdaptiveMambaBlock(
                 dim, make_ffn(), use_cam=use_cam, cam_expansion=cam_expansion,
-                cam_pooling=cam_pooling, d_state=d_state, d_conv=d_conv,
-                expand=expand, paths=paths, direction=direction,
+                cam_pooling=cam_pooling, d_state=d_state, headdim=headdim,
+                expand=expand, mimo_rank=mimo_rank, rope_fraction=rope_fraction,
+                chunk_size=chunk_size, paths=paths, direction=direction,
             )
             for _ in range(depth)
         )

@@ -1,7 +1,7 @@
 """Build the clip-level manifest that the on-the-fly loader reads.
 
 One row per recording, not per window. Windows are chosen at load time, so every
-frame of every recording stays reachable instead of being frozen into a fixed
+frame of every recording stays reachable instead of being fixed into a fixed
 sample at build time.
 
 This is where the expensive, deterministic work happens: YuNet finds one face box
@@ -117,7 +117,7 @@ def _clbp_targets(stem: str) -> tuple[str, dict[str, float]] | None:
 
 
 def _ubfc_hr(clip_dir: Path) -> float | None:
-    """Clip-level heart rate from UBFC's shipped reference trace.
+    """Clip-level heart rate from UBFC's released reference trace.
 
     Two formats live in this dataset:
       DATASET_2/subjectN/ground_truth.txt  3 rows x N: PPG wave, HR bpm, timestamps
@@ -223,7 +223,7 @@ def main(limit_per_source: int | None = None, resume: bool = True) -> int:
 
     The full pass is thousands of clips and takes hours, so it has to survive being
     interrupted. Completed rows are reloaded from the existing parquet rather than
-    recomputed.
+    recalculated.
     """
     rows: list[dict] = []
     done: set[str] = set()

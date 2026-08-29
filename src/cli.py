@@ -32,7 +32,7 @@ def cli() -> None:
       5. samples   render contact sheets to eyeball the preprocessing
       6. info      coverage, label spread and the split
       7. check     shapes, parameter budget and throughput on this GPU
-      8. sanity    can the model recover a pulse it was handed? synthetic
+      8. sanity    can the model recover a pulse it was given? synthetic
       9. baseline  POS and CHROM on the test windows -- the floor to beat
      10. train     fit, then score the last epoch against that floor
      11. predict   run one video through a trained model and plot the pulse
@@ -83,7 +83,7 @@ def remux(manifest: Path, out: Path | None, source: str, force: bool,
     the loader's per-window cost: a seek to 120 s costs up to 1,449 ms against 44 ms
     once indexed. Keyframes are dense here, so it was never a keyframe problem.
 
-    `-c copy` copies every video packet verbatim, so no pixel changes and the face
+    `-c copy` copies every video packet unchanged, so no pixel changes and the face
     boxes and cached masks stay valid. Output stays AVI on purpose: MP4 and MKV drop
     three frames mid-stream on the 29.9167 fps clips, which shifts every frame after
     and desynchronises the contact-PPG target.
@@ -237,7 +237,7 @@ def audit(frames: int, workers: int, limit: int | None, out: Path, manifest: Pat
 
     Lossy inter-frame compression removes rPPG: the signal is a ~0.1% smooth
     brightness change, which a motion-compensated codec discards as imperceptible.
-    A clip whose spectrum pins to the bottom of the cardiac band has no pulse at
+    A clip whose spectrum fixes to the bottom of the cardiac band has no pulse at
     all, only low-frequency drift, and no model can recover one.
 
     Run this before training. It converts "the model underperformed" into "N% of
@@ -260,7 +260,7 @@ def audit(frames: int, workers: int, limit: int | None, out: Path, manifest: Pat
     if min_prominence is not None:
         # Selection uses only metrics computable from pixels: a peak must exist,
         # stand clear of the noise floor, and not sit under runaway drift. The
-        # label is deliberately excluded -- picking clips where a simple estimator
+        # label is intentionally excluded -- picking clips where a simple estimator
         # already agrees with the answer would make any later result circular.
         keep = results.filter(
             (~pl.col("band_edge")) & (pl.col("prominence") >= min_prominence)
@@ -292,11 +292,11 @@ def check(frames: int, batch: int, steps: int, manifest: Path) -> None:
     """Shapes, the published cost budget, and throughput on this card.
 
     Reports the parameter count and MACs per frame against CFMamba Table 4's 0.91M
-    and 80.82M. A model that has drifted off those numbers is not the model in the
+    and 80.82M. A model that has strayed off those numbers is not the model in the
     paper, whatever it scores, so this is worth running before a training run
     rather than after one.
 
-    Requires CUDA: mamba_ssm's selective scan has no CPU kernel.
+    Requires CUDA: Mamba-3's scan kernel has no CPU path.
     """
     import time
 
@@ -313,7 +313,7 @@ def check(frames: int, batch: int, steps: int, manifest: Path) -> None:
     from .model.losses import composite_loss
 
     if not torch.cuda.is_available():
-        raise click.ClickException("CUDA required: mamba_ssm has no CPU kernel.")
+        raise click.ClickException("CUDA required: Mamba-3's scan kernel has no CPU path.")
 
     model = CFMambaPhys(n_frames=frames).cuda().train()
     click.echo(model.describe())
@@ -367,8 +367,8 @@ def sanity(steps: int, frames: int) -> None:
     the architecture or the loss and no amount of real data will fix it.
 
     This is the control that three earlier training runs on this project lacked.
-    Each converged to predicting a constant, and it took a data audit to work out
-    that the input carried nothing. On synthetic input that ambiguity is gone: the
+    Each stabilised to predicting a constant, and it took a data audit to work out
+    that the input brought nothing. On synthetic input that ambiguity is gone: the
     signal is there by construction.
     """
     import math
@@ -382,11 +382,11 @@ def sanity(steps: int, frames: int) -> None:
     from .model.train import TrainConfig, _optimiser
 
     if not torch.cuda.is_available():
-        raise click.ClickException("CUDA required: mamba_ssm has no CPU kernel.")
+        raise click.ClickException("CUDA required: Mamba-3's scan kernel has no CPU path.")
 
     torch.manual_seed(0)
     model = CFMambaPhys(n_frames=frames).cuda().train()
-    # The real optimiser and schedule, not a stand-in. A control that exercises a
+    # The real optimiser and schedule, not a substitute. A control that exercises a
     # different configuration than training does is only half a control -- it would
     # pass with a broken learning rate or a mis-scaled warmup.
     config = TrainConfig(epochs=1, accum_steps=1)
@@ -572,8 +572,8 @@ def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
     There is no checkpoint selection -- both papers report the last epoch, so the
     epoch budget has to be chosen in advance rather than tuned on the result.
 
-    Results are broken out **per source**, which is not optional once the manifest
-    holds more than one corpus: under a straight 85/10/5, MCD-rPPG is 99.2% of the
+    Results are broken out **per source**, which is required once the manifest
+    keeps more than one corpus: under a straight 85/10/5, MCD-rPPG is 99.2% of the
     test segments and UBFC-rPPG is 0.8%, so an aggregate is a measurement of MCD.
     """
     from .model.train import TrainConfig
@@ -640,7 +640,7 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
     from .model.dataset import TARGET_FPS
 
     if not torch.cuda.is_available():
-        raise click.ClickException("CUDA required: mamba_ssm has no CPU kernel.")
+        raise click.ClickException("CUDA required: Mamba-3's scan kernel has no CPU path.")
 
     checkpoint = model_path or predict_mod.latest_checkpoint()
     model, config, state = predict_mod.load_model(checkpoint)
@@ -662,7 +662,7 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
             model, dataset, batch_size=batch, workers=workers
         )
     except torch.OutOfMemoryError as error:
-        # --seconds is not the lever here. Windows run one batch at a time, so peak
+        # --seconds is not the handle here. Windows run one batch at a time, so peak
         # memory is set by the checkpoint's window length and --batch, not by how
         # much of the recording is being read.
         free, total = torch.cuda.mem_get_info()

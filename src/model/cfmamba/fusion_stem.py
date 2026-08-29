@@ -2,15 +2,15 @@
 
 A face is roughly 127 LSB of static appearance and the pulse is a 0.1-0.5 LSB
 change on top of it, so raw frames ask the network to find a 0.3% modulation
-under a signal 400x larger. Frame differences cancel the static term outright but
-amplify every other artefact with it. The stem uses both: differences to expose
+under a signal 400x larger. Frame differences cancel the static term directly but
+amplify every other artifact with it. The stem uses both: differences to expose
 the change, raw frames to say where the skin is.
 
 RhythmFormer measures the effect directly. Dropping it in to models that never had
 it moves PhysFormer 11.99 -> 8.72 MAE on MMPD and 16.17 -> 2.55 on COHFACE
 (Tables 5 and 2), which is a larger swing than most architectures produce.
 
-CFMamba cites this stem to RhythmMamba (Section 3.2) but the two source papers
+CFMamba references this stem to RhythmMamba (Section 3.2) but the two source papers
 describe different geometry, so both are built here and selected by `variant`.
 Three values RhythmFormer ablates are not free parameters and are fixed
 accordingly: a 5:5 raw/difference ratio (its Table 8, 3.07 MAE against 4.56 for
@@ -23,15 +23,15 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-# RhythmMamba 3.2 / RhythmFormer 3.2 disagree; the parameter budget decides.
+# RhythmMamba 3.2 / RhythmFormer 3.2 disagree; the parameter budget determines.
 VARIANTS = {
     # kernel1, kernel2, pool in stem2, output stride relative to the input.
     #
-    # rhythmmamba's k2 is 5 rather than the 7 its prose implies. The prose only
+    # rhythmmamba's k2 is 5 rather than the 7 its text implies. The text only
     # constrains stem2 to stride 1 -- the 16x16 arithmetic does not work otherwise
     # -- so its kernel was never pinned, and the two source papers disagree anyway
     # (7 against RhythmFormer's 3). 5 is what reproduces the published cost: it
-    # lands the model at 82.5M MACs per frame against a stated 80.82M, where 7
+    # lands the model at 82.5M MACs per frame against a given 80.82M, where 7
     # gives 94.5M and 3 gives 74.1M. See tests/test_budget.py.
     "rhythmmamba": {"k1": 7, "k2": 5, "pool2": True, "stride": 8},
     "rhythmformer": {"k1": 5, "k2": 3, "pool2": False, "stride": 4},
@@ -45,10 +45,10 @@ def temporal_differences(x: torch.Tensor, reverse: bool = True) -> torch.Tensor:
     rather than wrapping. Wrapping would join the last frame of a recording to its
     first and manufacture a discontinuity at exactly the frequencies rPPG reads.
 
-    `reverse` selects RhythmMamba's stated ordering over RhythmFormer's. The two
+    `reverse` selects RhythmMamba's given ordering over RhythmFormer's. The two
     differ only by a sign on all four channels, and the first convolution is linear
     and unbiased with respect to sign, so this cannot change what the stem is able
-    to represent -- it is kept faithful, not because it matters.
+    to represent -- it is kept accurate, not because it matters.
     """
     n_frames = x.shape[1]
     index = torch.arange(n_frames, device=x.device)
@@ -78,9 +78,9 @@ class FusionStem(nn.Module):
             raise ValueError(f"unknown variant {variant!r}, expected one of {list(VARIANTS)}")
         spec = dict(VARIANTS[variant])
         # RhythmMamba's text gives 7x7 for both convolutions but only constrains
-        # stem2 to stride 1, so its kernel is genuinely free; RhythmFormer says
+        # stem2 to stride 1, so its kernel is really free; RhythmFormer states
         # 5x5 then 3x3. These overrides exist so the published cost budget can
-        # arbitrate rather than the prose. See tests/test_budget.py.
+        # arbitrate rather than the text. See tests/test_budget.py.
         if k1 is not None:
             spec["k1"] = k1
         if k2 is not None:

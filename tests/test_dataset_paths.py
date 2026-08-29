@@ -1,7 +1,7 @@
 """The optimised dataloader paths must produce exactly what the readable ones did.
 
 The hot path was restructured for speed (masking by multiply, luma gathered before
-the matmul). These pin the numerics so a later speed change cannot quietly alter
+the matmul). These pin the numerics so a later speed change cannot alter
 what the model is fed.
 """
 

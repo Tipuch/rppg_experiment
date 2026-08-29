@@ -18,7 +18,7 @@ def test_coefficients_are_bounded_to_the_unit_interval() -> None:
     """Eq. 7's sigmoid. The weight can only attenuate, which is what keeps a stack
     of these from compounding into an exploding residual stream.
 
-    Checked under a deliberately hostile scaling, where float32 sigmoid saturates
+    Checked under a intentionally unfriendly scaling, where float32 sigmoid saturates
     to exactly 0.0 and 1.0 -- the bound is closed, and the thing that matters is
     that it never escapes or goes non-finite.
     """
@@ -68,10 +68,10 @@ def test_the_descriptor_is_pooled_over_the_whole_clip() -> None:
 def test_the_modulation_depends_on_nothing_but_the_pooled_descriptor() -> None:
     """Two clips with the same mean and max per channel get the same w and b.
 
-    This is the real invariant. CAM is deliberately *not* symmetric across
+    This is the real invariant. CAM is intentionally *not* symmetric across
     channels -- each channel has its own row in both MLPs, which is what lets it
     learn that channel 3 is usually noisier than channel 7 -- so feeding identical
-    channels does not produce identical outputs, and asserting that it should was
+    channels does not produce identical outputs, and checking that it should was
     a misreading of Eq. 7.
     """
     torch.manual_seed(0)

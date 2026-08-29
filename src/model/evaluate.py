@@ -1,12 +1,12 @@
 """Video-level metrics: MAE, RMSE, MAPE, Pearson rho and SNR.
 
 CFMamba Eqs. 22-27. Every number reported for this project comes through here, so
-the definitions are worth stating rather than assuming:
+the definitions are worth recording rather than assuming:
 
   MAE, RMSE, MAPE  over per-window heart rates, in bpm
   rho              Pearson correlation between predicted and true rate *across
                    windows*, which is a different question from whether any one
-                   estimate is close. A constant predictor scores a plausible MAE
+                   estimate is close. A constant predictor scores a credible MAE
                    and a rho of zero, and that gap is the whole point of reporting
                    both.
   SNR              in dB, on the predicted waveform against the true rate
@@ -37,7 +37,7 @@ def summarise(rows: Iterable[dict[str, float]]) -> dict[str, float]:
     """Aggregate per-window results into the five reported metrics.
 
     Windows whose rate could not be estimated -- a dead prediction, a clip with no
-    contact PPG -- are dropped and *counted*. Silently dropping them would let a
+    contact PPG -- are dropped and *counted*. Invisibly dropping them would let a
     model that fails on the hard half of the data report the easy half's score.
     """
     rows = list(rows)
@@ -111,7 +111,7 @@ def evaluate(
     at the worst clips, or re-aggregate without a second forward pass.
 
     **The loss is scored here too**, per window, because otherwise nothing records
-    it on the held-out side: heart-rate MAE is what the papers report, but MAE on a
+    it on the unseen side: heart-rate MAE is what the papers report, but MAE on a
     handful of subjects is quantised to the periodogram bin spacing and swings by
     several bpm between epochs on sampling noise alone. A dev loss moves smoothly,
     on the same scale as the training loss, and is the only thing that shows the
@@ -165,11 +165,11 @@ def per_source(rows: list[dict]) -> list[tuple[str, dict[str, float]]]:
 
     Under a straight 85/10/5 over everything on disk, MCD-rPPG contributes 5979 of
     the 6027 test segments and UBFC-rPPG contributes 48 -- 0.8%. An aggregate over
-    that is a measurement of MCD wearing a label that says "test", and MCD is the
+    that is a measurement of MCD wearing a label that states "test", and MCD is the
     corpus whose video the audit puts below chance for a recoverable pulse
     (DATASETS.md). Reporting the split by source is what keeps the two questions --
     "did it learn a pulse" and "did it learn MCD's population statistics" --
-    distinguishable.
+    separate.
     """
     groups: dict[str, list[dict]] = {}
     for row in rows:

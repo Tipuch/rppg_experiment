@@ -76,14 +76,14 @@ def existing_frame_store(
 ) -> tuple[Path, list[tuple[int, int]]] | None:
     """(path, picks) if this clip was already extracted, else None.
 
-    The picks are read back from a sidecar rather than recomputed. Recomputing
-    them cannot work: which windows a store holds depends on the decoded frame
+    The picks are read back from a sidecar rather than recalculated. Recomputing
+    them cannot work: which windows a store keeps depends on the decoded frame
     count, which a later run has no cheap way to reproduce, so a re-run would
     label the same pixels with different timestamps.
 
     Decoding a 180 s clip and running face detection is the expensive part of a
     build; the labels behind it are cheap text. Reusing a finished store makes
-    re-runs incremental, which matters while git-lfs is still delivering videos.
+    repeats incremental, which matters while git-lfs is still delivering videos.
     """
     path = frame_store_path(out_dir, clip_id)
     sidecar = _picks_path(out_dir, clip_id)
@@ -118,7 +118,7 @@ def select_windows(
 ) -> list[tuple[int, int]]:
     """Pick up to max_windows evenly-spread window starts, as source frame indices.
 
-    A 180 s resting recording is highly redundant, and keeping all 18 windows of
+    A 180 s left recording is highly redundant, and keeping all 18 windows of
     every MCD clip needs ~894 GB of frame stores against the disk available.
     Three well-spread windows carry nearly the same information for ~159 GB, and
     stop MCD outweighing CLBP-300 by 18:1 on row count.
@@ -137,7 +137,7 @@ def select_windows(
 
 
 def gather_windows(frames: np.ndarray, picks: list[tuple[int, int]]) -> np.ndarray:
-    """Concatenate only the selected windows, so the store holds nothing else."""
+    """Concatenate only the selected windows, so the store keeps nothing else."""
     return np.concatenate(
         [frames[off : off + WINDOW_FRAMES] for _, off in picks], axis=0
     )

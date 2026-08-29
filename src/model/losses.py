@@ -13,12 +13,12 @@ periodicity it locked onto: a prediction at twice the true rate can correlate
 respectably while being wrong by 70 bpm.
 
 **Weights.** CFMamba leaves alpha and beta unstated. RhythmFormer Section 3.4 uses
-0.2 and 1.0, and its Table 13 shows the balance is not incidental -- the temporal
-term alone reaches 3.56 MAE, the frequency term alone collapses to 13.32, and
+0.2 and 1.0, and its Table 13 shows the balance is not minor -- the temporal
+term alone reaches 3.56 MAE, the frequency term alone reduces to 13.32, and
 together they reach 3.13. Those are the defaults.
 
 **Why the frequency term is written here rather than imported.** The vendored
-`TorchLossComputer.Frequency_loss` is the same construction, but it derives its
+`TorchLossComputer.Frequency_loss` is the same construction, but it obtains its
 ground-truth rate through `calculate_metric_per_video`, which hardcodes a
 first-order 0.6-3.3 Hz band-pass. Importing it would put a 36-198 bpm band inside
 the *loss*, where it is harder to notice than in a metric. The candidate range
@@ -73,7 +73,7 @@ def frequency_loss(
 
     The label is the target waveform's own dominant rate, taken under no_grad --
     it is a label, not a quantity to optimise. Reading it from the contact PPG
-    rather than from a manifest column is deliberate: five UBFC subjects have a
+    rather than from a manifest column is intentional: five UBFC subjects have a
     broken HR readout and an intact waveform (DATASETS.md).
     """
     bpm = bpm_candidates(predicted.device)

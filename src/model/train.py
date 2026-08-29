@@ -2,7 +2,7 @@
 
 Waveform supervision only: one target per frame, taken from the contact PPG, and
 heart rate read off the prediction afterwards rather than learned. The scalar
-regression this file used to run is gone -- a clip-level label differs from the
+regression this file used to run is gone -- a clip-level label departs from the
 true rate of any given 5.33 s window by 4.02 bpm on this corpus, so it was the
 wrong target before it was a hard optimisation.
 
@@ -17,7 +17,7 @@ advance and not tuned afterwards.
 **POS and CHROM are scored on the same windows before training starts.** They need
 no training and publish ~4.06-4.08 bpm MAE on UBFC-rPPG. A run that ends above
 them has not learned anything a decade-old algorithm does not already do, and
-seeing that number first makes the comparison unavoidable rather than optional.
+the baseline is therefore printed before the first epoch.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from .dataset import (
 )
 from .evaluate import evaluate, format_metrics, per_source, per_subject, summarise
 
-# CLBP-300's five clips ship as bare .mov files with the labels encoded in the
+# CLBP-300's five clips ship as plain .mov files with the labels encoded in the
 # filename and no waveform at all, so they cannot support per-frame supervision.
 NO_WAVEFORM_SOURCES = ("clbp300",)
 from .losses import DEFAULT_ALPHA, DEFAULT_BETA, composite_loss
@@ -106,7 +106,7 @@ class TrainConfig:
     # Cap the per-epoch dev pass. Dev is 11,984 segments on the full corpus, so
     # scoring all of it every epoch costs as much as the training does -- and the
     # trajectory does not need that precision, it needs to be visible. The full dev
-    # and test splits are scored once at the end, uncapped.
+    # and test splits are scored once at the end, unlimited.
     dev_eval_segments: int = 1500
     frame_norm: str = "standardized"
     include_dataset1: bool = True
@@ -116,7 +116,7 @@ class TrainConfig:
     log_every: int = 25
     # Synchronise inside the training loop so compute_s is compute rather than
     # queue-submission time. Off by default: it serialises the pipeline, so it
-    # measures the split honestly and makes the run slower while it does.
+    # measures the split truthfully and makes the run slower while it does.
     profile: bool = False
     # Continue from out_dir/last.pt instead of starting over. The schedule inputs
     # must match what the checkpoint was written under; see check_resumable.
@@ -127,7 +127,7 @@ class TrainConfig:
 # Evaluation loaders get a fraction of the worker budget, and never persist.
 #
 # This is not a tuning preference, it is a correctness fix. A run builds four
-# loaders -- train, dev, test, and the capped per-epoch watch split -- and giving
+# loaders -- train, dev, test, and the limited per-epoch watch split -- and giving
 # every one of them `num_workers=12, persistent_workers=True` leaves **48 worker
 # processes** alive simultaneously, each holding an ffmpeg child, decode buffers and
 # pinned host memory. Measured on a 16-thread machine: load average 23.5, GPU
@@ -154,14 +154,14 @@ def _loader(segments: pl.DataFrame, cfg: TrainConfig, train: bool) -> DataLoader
         num_workers=workers,
         prefetch_factor=2 if workers else None,
         # Persist only the training loader. An evaluation loader that stays warm
-        # holds its workers idle for the whole epoch it is not being used in.
+        # keeps its workers idle for the whole epoch it is not being used in.
         persistent_workers=bool(workers) and train,
         pin_memory=train,
         # Uniform training batches. A short final batch is a second tensor shape,
         # which means a second set of cuFFT plans and a second workspace on a card
         # that has already run out once -- cuFFT reports that as
-        # CUFFT_INTERNAL_ERROR rather than as an allocation failure, which is a
-        # miserable thing to debug. Evaluation keeps every window, so it does not
+        # CUFFT_INTERNAL_ERROR rather than as an allocation failure, so the cause is not
+        # apparent from the message. Evaluation keeps every window, so it does not
         # drop.
         drop_last=train,
     )
@@ -192,17 +192,18 @@ def _optimiser(
                                which after the sigmoid is the *midpoint* of the
                                physiological range, 1.625 Hz. That is a prior on
                                heart rate masquerading as regularisation.
-      `A_log`, `D`             Mamba's state-transition and skip parameters.
-                               `mamba_ssm` marks both `_no_weight_decay`, and
-                               `A_log` is 2-D, so a dimension rule alone would miss
-                               it. The flag is honoured directly.
+      `dt_bias`, `D`           Mamba-3's step-size and skip parameters, which
+      `B_bias`, `C_bias`       `mamba_ssm` marks `_no_weight_decay`, plus the B and
+                               C biases, which mamba_layer.py marks. The latter two
+                               are 3-D, so a dimension rule alone would miss them.
+                               The flag is respected directly.
 
     **Warmup then cosine.** No paper in the lineage states a schedule. Cosine decay
     after a short linear warmup is the AdamW convention for vision models of this
     class, and is what this project's previous MambaVision-based configuration used
     minus the warmup. The warmup is the addition: at batch 4 the first steps carry
     both the largest gradients the model will ever see and the noisiest estimate of
-    them, and a cosine schedule alone spends its highest learning rate exactly
+    them, and a cosine schedule alone uses its highest learning rate exactly
     there.
     """
     decay, no_decay = [], []
@@ -256,7 +257,7 @@ def save_checkpoint(
     path: Path, *, model, optimiser, scheduler, epoch: int,
     history: list[dict], config: dict, steps_per_epoch: int,
 ) -> None:
-    """Everything needed to continue this run, not merely to reuse its weights.
+    """Everything needed to continue this run, not only to reuse its weights.
 
     Weights alone give a warm restart: AdamW's moments are rebuilt from scratch and
     the scheduler restarts its warmup, jumping the learning rate back to peak. For a
@@ -290,7 +291,7 @@ def load_checkpoint(path: Path) -> dict:
 def check_resumable(
     saved_config: dict, cfg: TrainConfig, saved_steps: int, steps_per_epoch: int
 ) -> None:
-    """Refuse to continue a schedule that is not the one that was saved.
+    """Reject a resume whose schedule is not the one that was saved.
 
     Silent mismatch is the failure worth preventing: the run would restore a step
     counter into a cosine of a different length and carry on, producing a learning
@@ -322,12 +323,12 @@ def write_progress(
     Called after **every** epoch, not just the last. Both artefacts used to be
     written only once the final epoch returned, so an interrupted run left an empty
     output directory however far it had got -- twice on this project a run was
-    killed after 2.6 hours and its completed epochs survived only in a terminal
+    terminated after 2.6 hours and its completed epochs existed only in a terminal
     log. An epoch here costs over an hour; a JSON dump costs nothing.
 
     `complete` distinguishes two finished epochs of six from a finished two-epoch
     run, which the history alone cannot express. The caller's `result` is not
-    mutated, so the final write can still build on it.
+    altered, so the final write can still build on it.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -338,20 +339,20 @@ def write_progress(
 def check_targets_are_supervised(
     dataset, sample: int = 64, tolerance: float = 0.2
 ) -> None:
-    """Fail loudly if the contact PPG is not reaching the loss.
+    """Fail noisily if the contact PPG is not reaching the loss.
 
     A missing waveform does not raise anywhere: `load_ppg` returns None,
     `_waveform` returns zeros, and every tensor downstream keeps its shape. The
-    run then trains against a flat target -- `neg_pearson` pins at exactly 1.0 and
-    the frequency term collapses onto the one constant label that argmax of a zero
+    run then trains against a flat target -- `neg_pearson` fixes at exactly 1.0 and
+    the frequency term reduces onto the one constant label that argmax of a zero
     PSD produces, which reads in the log as fast progress rather than as failure.
 
-    That is not hypothetical. Repointing `video_path` to the remuxed containers
+    That is not theoretical. Repointing `video_path` to the remuxed containers
     severed MCD's labels from its clips, because the PPG is located relative to the
     video, and a 1.3-hour epoch trained on zeros before the dropped-window count
     gave it away.
 
-    Only the PPG is touched, never the video, so this costs a few hundred
+    Only the PPG is modified, never the video, so this costs a few hundred
     interpolations and runs before the first batch is decoded.
     """
     import numpy as np
@@ -429,11 +430,11 @@ def train(
     splits: dict[str, pl.DataFrame] | None = None,
 ) -> dict:
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA required: mamba_ssm's selective scan has no CPU kernel.")
+        raise RuntimeError("CUDA required: Mamba-3's scan kernel has no CPU path.")
     device = "cuda"
     torch.manual_seed(cfg.seed)
     # Every batch is the same shape -- (batch, n_frames, 3, resolution, resolution)
-    # -- so cuDNN's autotuner pays for itself on the first step and the stem's
+    # -- so cuDNN's autotuner covers for itself on the first step and the stem's
     # convolutions run on the plan it picks for the rest of the run.
     torch.backends.cudnn.benchmark = True
     # TF32 for the float32 matmuls the autocast region does not cover. The signal
@@ -455,12 +456,12 @@ def train(
                for name, part in splits.items() if part.height}
     # A cheap, fixed subsample of dev for the per-epoch curve. Deterministic, so
     # the trajectory is comparable across runs rather than a different sample each
-    # time; subject coverage follows from sampling segments uniformly.
+    # time; subject coverage follows from sampling segments evenly.
     watch_split = "dev" if "dev" in splits and splits["dev"].height else "test"
     watching = splits[watch_split]
     if cfg.dev_eval_segments and watching.height > cfg.dev_eval_segments:
         watching = watching.sample(cfg.dev_eval_segments, seed=cfg.seed, shuffle=True)
-        print(f"  per-epoch {watch_split} pass capped at {watching.height} of "
+        print(f"  per-epoch {watch_split} pass limited at {watching.height} of "
               f"{splits[watch_split].height} segments "
               f"({watching['subject_id'].n_unique()} subjects); "
               f"the full split is scored once at the end")
@@ -536,8 +537,8 @@ def train(
         optimiser.zero_grad(set_to_none=True)
         window = {"loss": torch.zeros((), device=device), "n": 0}
         window_started = time.time()
-        # Data-wait against compute. Without this the epoch time says the run is
-        # slow but not which half is slow, which is the question that decides
+        # Data-wait against compute. Without this the epoch time states the run is
+        # slow but not which half is slow, which is the question that determines
         # whether to touch the loader or the model.
         fetch_s = compute_s = 0.0
         waiting = time.perf_counter()
@@ -608,7 +609,7 @@ def train(
             "fetch_s": fetch_s,
             "compute_s": compute_s,
         }
-        # Lifted out of the nested metrics dict as well, so a loss curve is
+        # Pulled out of the nested metrics dict as well, so a loss curve is
         # `train_loss` against `dev_loss` at the top level -- the schema the
         # plotting tools already read.
         for term in ("loss", "time", "freq"):

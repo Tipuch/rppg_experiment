@@ -1,8 +1,8 @@
 """The vanilla FFN ablation control, CFMamba Table 5.
 
-It must be exactly what the ablation says -- "two linear layers to compose the
+It must be exactly what the ablation states -- "two linear layers to compose the
 FFN" -- because its whole job is to be the thing DF-FFN is compared against. A
-control that has quietly acquired a convolution or a norm measures nothing.
+control that has acquired a convolution or a norm does not isolate the FFN.
 """
 
 from __future__ import annotations

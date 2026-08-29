@@ -1,8 +1,8 @@
 """Frame decoding via ffmpeg.
 
 cv2.VideoCapture is not used. opencv-python 5.0.0.93 (the pre-release this
-project pins) corrupts the heap decoding UBFC's rawvideo AVIs -- it opens the
-file, reports the right metadata, then dies inside the first read() with
+project fixes) damages the heap decoding UBFC's rawvideo AVIs -- it opens the
+file, reports the right metadata, then fails inside the first read() with
 "free(): invalid next size". ffmpeg decodes the same files cleanly.
 
 ffmpeg also does the fps resample and the downscale in one pass, which keeps 4K
@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 # Working resolution for detection and cropping. Outputs are 128 or 256 square,
-# so decoding above this buys no detail and costs memory.
+# so decoding above this gains no detail and costs memory.
 WORK_MAX_SIDE = 640
 
 
@@ -44,7 +44,7 @@ def _duration_from_keyframes(path: Path) -> float:
 
 # Container metadata never changes, and reading it is expensive: `probe` spawns an
 # ffprobe, and on the MCD AVIs -- which carry no usable duration -- it spawns a
-# second one that walks the entire keyframe index. Profiled inside the training
+# second one that steps through the entire keyframe index. Profiled inside the training
 # loader, the pair was 3.38 s of every 5.96 s spent producing 11 segments: 57% of
 # the time, to re-derive constants. One entry per clip per worker is enough.
 #
@@ -116,7 +116,7 @@ def read_keyframes(
         "-vf", f"scale={ow}:{oh}", "-fps_mode", "passthrough",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
     ]
-    # check=False: a truncated or unreadable clip is handled by the frame count
+    # check=False: a truncated or illegible clip is handled by the frame count
     # below, which returns None, rather than by raising.
     proc = subprocess.run(cmd, capture_output=True, check=False)
     count = len(proc.stdout) // frame_bytes
@@ -152,7 +152,7 @@ def read_window(
     0.069 s on UBFC. The decode itself costs the same either way; what disappears is
     the pipe, the buffer copy and the numpy allocation.
 
-    Cropping is exact pixel selection, so it adds no resampling and loses nothing.
+    Cropping is exact pixel selection, so it adds no resampling and forfeits nothing.
 
     Two things measured and rejected: `-hwaccel cuda` is 3x *slower* than plain
     software decode here (the round trip to the GPU costs more than MPEG-4 SP
@@ -162,7 +162,7 @@ def read_window(
     fixed frame count means a different span per source -- 160 frames is 2.7 s of
     CLBP-300 at 60 fps but 6.7 s of MCD's 24 fps IriunWebcam -- and TSM's one-frame
     shift covers a different interval in each. The cost is real: 60 -> 30 halves the
-    Nyquist limit to 15 Hz, and 24 -> 30 interpolates frames carrying no new
+    Nyquist limit to 15 Hz, and 24 -> 30 interpolates frames bringing no new
     information. Uniform timebase is worth more than that here, because the model
     cannot otherwise tell how much time a window spans.
 
@@ -172,12 +172,12 @@ def read_window(
     which is what makes decoding per minibatch viable instead of pre-materialising
     frames to disk.
 
-    `trust_crop` says the caller already knows the box lies inside the frame --
+    `trust_crop` states the caller already knows the box lies inside the frame --
     which a manifest row does, because `src/model/clips.py` derived it from the
     real frames. It then **skips the probe entirely**, and that is not a micro-
     optimisation: a cold `probe` costs 650 ms on an MCD clip against 130 ms to
     decode the window it describes, because those AVIs carry no usable duration and
-    the fallback walks the whole keyframe index in a second subprocess. The LRU
+    the fallback steps through the whole keyframe index in a second subprocess. The LRU
     cache hides it only after a worker has seen the clip, and across 3,600 clips
     and twelve workers it is cold for most of the first epoch.
 
@@ -214,7 +214,7 @@ def read_window(
         # fire.
         #
         # The even-rounding applies to the *scaled* size only. Rounding down when no
-        # scaling happens silently shaved a pixel off every odd-sided crop -- UBFC's
+        # scaling happens shaved a pixel, without notice, off every odd-sided crop -- UBFC's
         # 269 px box came back 268 -- which would put the frames and the cached skin
         # mask on subtly different grids.
         scale = min(1.0, max_side / max(w, h))

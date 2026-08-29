@@ -6,14 +6,14 @@ doi:10.1016/j.bspc.2026.110996 -- rebuilt from the paper, with RhythmMamba
 pinning values that both leave open.
 
 One file per module the papers name, one test file per module, so a claim in a
-paper can be traced to the code that implements it and to the test that holds it
+paper can be tracked to the code that implements it and to the test that keeps it
 in place:
 
 | file               | paper                          | test                    |
 |--------------------|--------------------------------|-------------------------|
 | fusion_stem.py     | CFMamba 3.1 / RM 3.2 / RF 3.2  | test_fusion_stem.py     |
 | pga.py             | CFMamba Eqs. 1-5               | test_pga.py             |
-| mamba_layer.py     | RhythmMamba 3.3, Eq. 4         | test_mamba_layer.py     |
+| mamba_layer.py     | RM 3.3 Eq. 4 / Mamba-3 3.1-3.4 | test_mamba_layer.py     |
 | cam.py             | CFMamba Eqs. 6-8               | test_cam.py             |
 | complex_linear.py  | CFMamba Eqs. 10-11             | test_complex_linear.py  |
 | cs_ffn.py          | CFMamba Eqs. 9-12              | test_cs_ffn.py          |
@@ -28,9 +28,14 @@ in place:
 Every value the papers do not state is a named constructor argument with its
 justification beside it. Nothing here is a silent choice.
 
-`mamba_layer.py` is the only module that needs CUDA: `mamba_ssm`'s selective scan
-has no CPU kernel. Everything else is plain PyTorch and is tested on CPU, which is
-why the package is split at that seam.
+**The scan is Mamba-3.** All three papers call `mamba_ssm.Mamba`, the Mamba-1
+selective scan. `mamba_layer.py` swaps the recurrence for Mamba-3 (Lahoti et al.,
+arXiv:2603.15569) and leaves the block around it alone; see that module for what
+changes and why.
+
+`mamba_layer.py` is the only module that needs CUDA: Mamba-3's scan is a Triton
+kernel with no CPU path. Everything else is plain PyTorch and is tested on CPU,
+which is why the package is split at that seam.
 """
 
 from .band_mask import GaussianBandMask

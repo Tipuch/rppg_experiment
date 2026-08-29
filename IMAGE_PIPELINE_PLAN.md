@@ -24,7 +24,7 @@ Verified against the installed package. `mambavision` exposes exactly two things
 
 Source contains no `bbox`, `anchor`, `roi_head` or `RPN`; `num_classes=1000`.
 It is an ImageNet **backbone**, not a detector. To get boxes from it you would
-have to bolt on a detection head and train it on labelled face boxes -- weeks of
+have to bolt on a detection head and train it on named face boxes -- weeks of
 work, and it would end up worse than an off-the-shelf detector.
 
 Three ways forward:
@@ -37,11 +37,11 @@ is guaranteed consistent with the mask we later apply. Needs a coarse first pass
 crop.
 
 **(b) Keep YuNet**, already working in `src/aggregation/face.py`, median box per
-clip. Cheap, stable, proven on this data.
+clip. Cheap, stable, confirmed on this data.
 
 **(c) Use MambaVision as the rPPG *model* backbone**, which is what it is good
 for, and let (a) or (b) handle detection. This is likely what was intended --
-MambaVision belongs downstream of this pipeline, not inside it.
+MambaVision fits downstream of this pipeline, not inside it.
 
 ## 2. Blocking: 512x512 does not fit on disk
 
@@ -57,15 +57,15 @@ Measured, at 180 s / 30 fps per MCD recording, 3600 recordings:
 
 Lossy video compression is not a way out. The rPPG signal is a sub-percent
 fluctuation in pixel value; H.264 at any normal CRF quantises it away. Lossless
-(FFV1) on mostly-black masked frames would help, but the surviving skin region
-still dominates and 3-5x is optimistic.
+(FFV1) on mostly-black masked frames would help, but the remaining skin region
+still outweighs and 3-5x is optimistic.
 
 Options, cheapest first:
 
 | option | all 3600 | keeps |
 |---|---|---|
 | 3 windows/recording @128 | 159 GB | plenty of data, current resolution |
-| 3 windows/recording @256 | 637 GB | borderline, no headroom |
+| 3 windows/recording @256 | 637 GB | borderline, no margin |
 | 3 windows/recording @512 | 2.5 TB | no |
 | full recording @128 | 1.0 TB | no |
 
@@ -92,9 +92,9 @@ Correct order:
 Same steps, one swap, and the saved mean-Y trace becomes a clean skin-brightness
 signal instead of a room-brightness signal.
 
-## 4. Consequence to be deliberate about: the subtraction removes the pulse
+## 4. Result to be intentional about: the subtraction removes the pulse
 
-This is the part worth being explicit about, because it decides how the output
+This is the part worth being explicit about, because it determines how the output
 gets consumed.
 
 The rPPG signal *is* a small, spatially near-uniform brightness change across
@@ -107,17 +107,17 @@ factorises each clip into:
 
     mean_Y[t]        1-D trace, carries most of the pulse
     frames[t]        spatially detrended skin, carries local/regional variation
-                     (forehead and cheek do not pulse in perfect lockstep)
+                     (forehead and cheek do not pulse in perfect synchrony)
 
-Both halves are informative and the split is defensible -- it is close to what
+Both halves are informative and the split is justifiable -- it is close to what
 CHROM and POS do analytically. **But a model trained on `frames` alone will
 underperform badly**, because the signal it needs was moved into `mean_Y`. The
-downstream model must consume both. Worth deciding now, since it shapes the
+downstream model must consume both. Worth determining now, since it shapes the
 model interface, not just storage.
 
-Two mechanical details that follow:
+Two routine details that follow:
 
-- `Y - mean_Y` goes negative. Clipping to uint8 destroys half the residual.
+- `Y - mean_Y` goes negative. Clipping to uint8 ruins half the residual.
   Store as `Y - mean_Y + 128` in uint8 (offset, invertible, keeps the existing
   store format), or as int16/float16 if the extra precision is wanted.
 - Recentre only Y. Convert back to RGB with the original Cb/Cr so colour
@@ -142,7 +142,7 @@ frame to frame makes `mean_Y[t]` jump for reasons that have nothing to do with
 blood volume -- a fake signal at exactly the frequencies we care about.
 
 Mitigate by computing the mask on sampled frames and taking a **median mask per
-clip**, mirroring the median-box approach already used for detection. Faces are
+clip**, matching the median-box approach already used for detection. Faces are
 near-stationary in these recordings, so a fixed mask is reasonable. Re-estimate
 per window if motion is significant (MCD has left/right view recordings).
 
@@ -161,12 +161,12 @@ than invisible.
    back to RGB, zero non-skin.
 4. Extend the frame store: alongside `frames.npy`, write `mean_y.npy` (float32,
    one value per frame) and `mask_area.npy`. Add `mean_y_path` to the Polars
-   schema so the trace travels with the row.
+   schema so the trace moves with the row.
 5. Re-run over MCD/CLBP-300 with the sampling policy from section 2.
 
 ## 8. Decisions needed
 
 1. Face box: SegFace-derived (a), YuNet (b), or something else?
 2. Resolution and sampling: 128 with 3 windows/recording (159 GB) is the only
-   combination with real headroom. Accept, or pick a different point?
+   combination with real margin. Accept, or pick a different point?
 3. Confirm the downstream model will consume `mean_Y[t]` alongside the frames.

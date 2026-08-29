@@ -1,9 +1,9 @@
-"""A killed run must not lose every epoch it finished.
+"""A terminated run must not lose every epoch it finished.
 
 `history.json` and `final.pt` were written only after the last epoch, so a run that
 was interrupted left an empty output directory however far it had got. That
-happened twice on this project: a 3-epoch full-corpus run killed mid-epoch-1 after
-2.6 hours, and a 6-epoch run killed at a session boundary after another 2.6 hours.
+happened twice on this project: a 3-epoch full-corpus run terminated mid-epoch-1 after
+2.6 hours, and a 6-epoch run terminated at a session boundary after another 2.6 hours.
 Both had completed epochs whose metrics existed only in a terminal log.
 
 Writing after each epoch costs a 4 MB checkpoint and a JSON dump against epochs

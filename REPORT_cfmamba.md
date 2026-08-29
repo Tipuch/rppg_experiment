@@ -15,7 +15,7 @@ a 31 MB tensor.
 `read_window` already crops the box inside the ffmpeg filter graph. That removes
 the pipe and the numpy allocation but not the read: ffmpeg pulls every byte off
 disk before the crop filter sees it. The box is ~9% of the frame, so 92% of the
-read was discarded.
+read was thrown away.
 
 | stage | per item |
 |---|---|
@@ -43,23 +43,23 @@ HR-balance augmentation decodes at `TARGET_FPS * k` with k in [0.7, 1.4], which 
 
 Build it with `uv run python -m src.cli cache`.
 
-### Equivalence, measured rather than assumed
+### Equivalence, measured rather than presumed
 
-It is not bit-identical to ffmpeg, and the difference was quantified.
+It is not exactly equal to ffmpeg, and the difference was quantified.
 
 ffmpeg's `fps=` filter is **pure nearest-frame selection** -- checked frame by
 frame against a full decode, every frame it delivers is an exact source frame,
-never an interpolation. It selects with a running accumulator; index arithmetic
+never an interpolation. It selects with a running running sum; index arithmetic
 rounds each output frame independently. Across clips at 28.67 and 29.78 fps and
 k in {0.75, 1.0, 1.35}:
 
 - the **anchor is identical** in every case -- `round(start * fps)` is the frame
   ffmpeg delivers first;
-- every other frame differs by **at most one source frame** (35 ms at 28.67 fps);
+- every other frame departs by **at most one source frame** (35 ms at 28.67 fps);
 - the window covers the same span.
 
 `window_indices` is now the definition, used by both paths.
-`tests/test_framecache.py` pins the anchor, the +/-1 bound, and that the pulse
+`tests/test_framecache.py` fixes the anchor, the +/-1 bound, and that the pulse
 read out of the window is unchanged.
 
 ### Result
@@ -68,7 +68,7 @@ read out of the window is unchanged.
 |---|---|---|---|
 | ffmpeg decode | 395 ms/batch | 496 | 616 |
 | frame cache | **207 ms/batch** | 246 | 255 |
-| GPU step (ceiling) | 230 ms | 230 | 230 |
+| GPU step (upper limit) | 230 ms | 230 | 230 |
 
 The loader now delivers a batch faster than the GPU consumes one. Real epochs:
 **90.6 s -> 26.1 s**, of which 3.3 s is blocked on data. Training is GPU-bound.
@@ -81,10 +81,10 @@ with `np.loadtxt`, the k=1 waveform is sampled once instead of twice per item, a
 
 ---
 
-## 2. Held-out loss was never recorded, and it is the whole story
+## 2. Unseen loss was never logged, and it is the whole story
 
 `evaluate()` returned heart-rate metrics only, so no loss was scored on the
-held-out side. It now is, per window, on a forward pass that already happened.
+unseen side. It now is, per window, on a forward pass that already happened.
 
 15-epoch run, `build/runs/cfmamba15`:
 
@@ -95,7 +95,7 @@ held-out side. It now is, per window, on a forward pass that already happened.
 | 11 | 0.661 | 7.218 | 0.61 |
 | 14 | 0.337 | **14.013** | 1.94 |
 
-Train falls 13x; held-out rises 7.8x. The frequency term does all of it (train
+Train falls 13x; unseen rises 7.8x. The frequency term does all of it (train
 4.22 -> 0.20, dev 1.71 -> 13.92). With 41 training subjects the model memorises
 training spectra from epoch 3 on.
 
@@ -122,7 +122,7 @@ Plot both with `uv run python tools/plot_loss.py build/runs/cfmamba15`.
 4. **The protocol is not the published one.** Both runs used a random
    subject-grouped split; all three source papers use first-30 / last-12, which
    already exists as `paper_split` in `src/model/dataset.py`.
-5. **15 epochs is too many for 41 subjects.** Held-out loss bottoms at epoch 3.
+5. **15 epochs is too many for 41 subjects.** Unseen loss bottoms at epoch 3.
 
 ---
 
@@ -152,7 +152,7 @@ probe falls back to walking the whole keyframe index in a second subprocess --
 650 ms, against 130 ms to decode the window it describes.
 
 It now skips the probe when the caller passes a manifest box, and defers to
-probing when the box is genuinely oversized. That removes 650 ms from the first
+probing when the box is really oversized. That removes 650 ms from the first
 touch of each clip in each worker, which across 3,600 clips is most of epoch 0.
 
 It does not touch the 703 ms decode, and nothing in the loader can. Seeking 100 s
@@ -166,7 +166,7 @@ fifteen times is 59 hours of work.
 | audit-usable MCD + all UBFC | 207 | 5,846 | 0.5 h (+90 GB cache) |
 
 **Running 3 epochs over the full corpus instead** (~12 h),
-`build/runs/cfmamba_full3`. Held-out loss bottomed at epoch 3 on UBFC, so this may
+`build/runs/cfmamba_full3`. Unseen loss bottomed at epoch 3 on UBFC, so this may
 sit near the useful budget anyway at 211x the training data.
 
 ### How to read that result

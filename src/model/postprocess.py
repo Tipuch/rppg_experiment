@@ -6,12 +6,12 @@ peak. Both also state they used the rPPG-Toolbox, which is vendored under
 tools/rPPG-Toolbox -- so the primitives here are imported from it rather than
 rewritten, and the numbers stay comparable with every method in its tables.
 
-**The toolbox's own wrapper is not reused, deliberately.** Its
+**The toolbox's own wrapper is not reused, intentionally.** Its
 `calculate_metric_per_video` hardcodes `butter(1, [0.6, 3.3])` -- a *first*-order
 filter over a *wider* band than either paper specifies. Its own comments say to
 use 0.75 and 2.5 "to more closely match results in the NeurIPS 2023 toolbox
 paper", but the constants are not parameters, so matching the papers means calling
-the primitives directly. Silently inheriting 0.6-3.3 Hz would admit a 36 bpm drift
+the primitives directly. Invisibly inheriting 0.6-3.3 Hz would admit a 36 bpm drift
 and a 198 bpm harmonic into every heart-rate estimate.
 
 The band is the same 0.75-2.5 Hz the DF-FFN's Gaussian mask is constrained to, and
@@ -47,7 +47,7 @@ def _vendored() -> ModuleType:
     path = _TOOLBOX / "evaluation" / "post_process.py"
     if not path.exists():
         raise FileNotFoundError(
-            f"vendored rPPG-Toolbox not found at {path}. It supplies the SNR and "
+            f"vendored rPPG-Toolbox not found at {path}. It provides the SNR and "
             "MACC definitions both papers report against."
         )
     spec = importlib.util.spec_from_file_location("_rppg_toolbox_post_process", path)
@@ -113,10 +113,10 @@ def compare(predicted: np.ndarray, truth: np.ndarray, fps: float = 30.0) -> dict
     """Everything reportable for one window, from a prediction and its target.
 
     The ground-truth rate is taken from the contact PPG over the same window, not
-    from the manifest's label column. DATASETS.md records subject24 labelled 96 bpm
+    from the manifest's label column. DATASETS.md records subject24 named 96 bpm
     against a PPG reading of 127.2, plus four other UBFC subjects whose HR readout
     drops out; the waveform on those same subjects is intact. Reading the rate off
-    the signal sidesteps the defect entirely, and is what the toolbox does.
+    the signal avoids the fault entirely, and is what the toolbox does.
     """
     pred_filtered = bandpass(predicted, fps)
     truth_filtered = bandpass(truth, fps)

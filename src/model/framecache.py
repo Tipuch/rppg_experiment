@@ -1,13 +1,13 @@
 """Materialised face-box frames, so training reads 23 MB a window instead of 147.
 
-UBFC-rPPG ships as uncompressed rawvideo AVI. One 640x480 frame is 921,600 bytes
+UBFC-rPPG releases as uncompressed rawvideo AVI. One 640x480 frame is 921,600 bytes
 on disk, so decoding a 160-frame window reads 147 MB -- and `read_window` crops the
 face box inside the ffmpeg filter graph, which removes the pipe and the numpy
 allocation but not the read: ffmpeg still pulls every byte off disk before the crop
-filter sees it. The box is about 9% of the frame, so 92% of that read is discarded.
+filter sees it. The box is about 9% of the frame, so 92% of that read is thrown away.
 
 Measured on this corpus, one epoch of 484 segments moved 71 GB off a LUKS-encrypted
-volume to produce 3.7 GB of pixels, and the run sat at 790 MB/s for 90 s an epoch
+volume to produce 3.7 GB of pixels, and the run was at 790 MB/s for 90 s an epoch
 with the CPU at a fifth of its capacity. Storage bandwidth was the limit, not
 decode and not the GPU.
 
@@ -15,7 +15,7 @@ So the box is decoded once, at native resolution and native frame rate, into one
 uint8 array per clip. **13.5 GB for all 48 UBFC clips**, which fits in page cache
 on a 62 GB machine, so after the first epoch the read costs nothing.
 
-Native resolution and native rate, both deliberately:
+Native resolution and native rate, both intentionally:
 
   resolution  `WindowDataset` crops an 87.5% sub-window and then resamples once,
               INTER_AREA when shrinking. Caching at 128 or 160 would put a
@@ -26,15 +26,15 @@ Native resolution and native rate, both deliberately:
   frame rate  the HR-balance augmentation decodes at TARGET_FPS*k with k in
               [0.7, 1.4]. A cache fixed at 30 fps would have to resample again to
               reach those, so the k that the augmentation depends on is exactly
-              what a 30 fps cache destroys.
+              what a 30 fps cache ruins.
 
-## Why this is not bit-identical to ffmpeg, and why that is safe
+## Why this is not exactly equal to ffmpeg, and why that is safe
 
 It cannot be, and the difference was measured rather than waved at.
 
 ffmpeg's `fps=` filter is **pure nearest-frame selection** -- checked frame by
 frame against a full decode, every frame it delivers is an exact source frame and
-never an interpolation. But it selects with a running accumulator, while index
+never an interpolation. But it selects with a running running sum, while index
 arithmetic rounds each output frame independently. The two therefore disagree on
 the duplication boundaries where 28.67 fps is stretched to 30.
 
@@ -42,14 +42,14 @@ What was measured, across clips at 28.67 and 29.78 fps and k in {0.75, 1.0, 1.35
 
   * the **anchor is identical** in every case -- `round(start * fps)` is the frame
     ffmpeg delivers first;
-  * every other frame differs by **at most one source frame**, 35 ms at 28.67 fps;
+  * every other frame departs by **at most one source frame**, 35 ms at 28.67 fps;
   * the window covers the same span, because both walk fps/(TARGET_FPS*k) source
     frames per output frame.
 
 A one-frame tie-break on a duplicated frame cannot move a 1-2 Hz rate, and
-`tests/test_framecache.py` pins that directly by reading the pulse out of both.
-What it buys is a resampler that is explicit, shared by both paths and testable,
-instead of one that lives inside a filter graph. `window_indices` is now the
+`tests/test_framecache.py` fixes that directly by reading the pulse out of both.
+What it gains is a resampler that is explicit, shared by both paths and testable,
+instead of one that resides inside a filter graph. `window_indices` is now the
 definition, and `WindowDataset` uses it whether the frames came from the cache or
 from the decoder.
 """
@@ -66,15 +66,15 @@ import polars as pl
 CACHE_DIR = Path("build/frames_cache")
 
 # Frames are stored as a headerless uint8 dump beside a JSON sidecar rather than as
-# .npy. The shape is then recoverable from the file size alone, so a build killed
-# part way through leaves a file whose length says how far it got instead of a .npy
+# .npy. The shape is then recoverable from the file size alone, so a build terminated
+# part way through leaves a file whose length states how far it got instead of a .npy
 # header claiming frames that were never written.
 FRAMES_SUFFIX = ".raw"
 SIDECAR_SUFFIX = ".json"
 PPG_SUFFIX = "_ppg.npz"
 
 # Same timebase every source is resampled onto. Imported from dataset would be
-# circular -- dataset imports this module -- so it is stated here and pinned equal
+# circular -- dataset imports this module -- so it is defined here and pinned equal
 # by tests/test_framecache.py.
 TARGET_FPS = 30.0
 
@@ -123,7 +123,7 @@ def open_clip(out_dir: Path, clip_id: str) -> np.memmap | None:
 
     Read-only and memory-mapped, so twelve dataloader workers share one set of
     pages rather than each holding its own copy, and a fancy-index of 160 frames
-    touches 23 MB instead of reading the whole clip.
+    modifies 23 MB instead of reading the whole clip.
     """
     sidecar = sidecar_path(out_dir, clip_id)
     frames = frames_path(out_dir, clip_id)
@@ -155,7 +155,7 @@ def _decode_box(row: dict, destination: Path) -> int:
 
     Written straight off the pipe in frame-sized chunks. The whole array would be
     266-450 MB per clip, which fits, but building 48 of them back to back would
-    keep handing the allocator a fresh half-gigabyte.
+    keep giving the allocator a fresh half-gigabyte.
     """
     side = int(row["box_side"])
     x, y = int(row["box_x"]), int(row["box_y"])
@@ -229,7 +229,7 @@ def build(
 
         # The sidecar is written last and on purpose: `open_clip` needs both files,
         # so a build interrupted mid-decode leaves a .raw with no sidecar, which
-        # reads as absent and is rebuilt rather than silently read short.
+        # reads as absent and is rebuilt rather than read short without notice.
         sidecar_path(out_dir, clip_id).write_text(json.dumps({
             "clip_id": clip_id,
             "side": int(row["box_side"]),

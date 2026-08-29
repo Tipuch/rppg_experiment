@@ -13,7 +13,7 @@ def build(rows: list[dict]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema=SCHEMA)
     df = pl.DataFrame(rows)
-    # Enum casts fail loudly on unknown values, which is the point.
+    # Enum casts fail noisily on unknown values, which is the point.
     return df.select(
         [pl.col(name).cast(dtype).alias(name) for name, dtype in SCHEMA.items()]
     )

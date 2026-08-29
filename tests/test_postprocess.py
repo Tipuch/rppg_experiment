@@ -50,7 +50,7 @@ def test_the_band_matches_the_papers_not_the_toolbox_default() -> None:
 
 def test_a_slow_drift_is_removed_rather_than_reported_as_a_pulse() -> None:
     """The failure that made 76% of MCD-rPPG look peakless: a 1/f slope with no
-    cardiac peak, whose argmax pins to the bottom of the search band."""
+    cardiac peak, whose argmax fixes to the bottom of the search band."""
     t = np.arange(300) / FPS
     drift = 5.0 * np.sin(2 * math.pi * 0.1 * t)
     pulse = _tone(72.0)

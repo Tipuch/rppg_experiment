@@ -1,6 +1,6 @@
 """Channel-spectral feed-forward network. CFMamba Eqs. 9-12, Fig. 4 stage 1.
 
-After PGA collapses space into channels, each channel is a pure time series and
+After PGA reduces space into channels, each channel is a pure time series and
 the *set* of channels is a spatial code. Mixing them pointwise in the time domain
 treats each instant independently. Mixing them in the channel-frequency domain
 instead asks which combinations of channels co-vary, which is what distinguishes a
@@ -42,7 +42,7 @@ class ChannelSpectralFFN(nn.Module):
         # Eq. 7). Section 3.3 omits the activation; see complex_linear.py.
         spectrum = complex_activation(self.linear(spectrum), self.activation)
         # Eq. 12. A complex linear does not preserve conjugate symmetry, so the
-        # inverse transform is complex. The imaginary residue is the part of the
+        # inverse transform is complex. The imaginary leftover is the part of the
         # learned map that no real-valued signal can express; discarding it is what
         # makes this a real-to-real layer, and is what FreTS does.
         return torch.fft.ifft(spectrum, dim=-1).real

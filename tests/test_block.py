@@ -1,6 +1,6 @@
 """One backbone layer, CFMamba Sections 3.2-3.3 over RhythmMamba Fig. 3.
 
-The thing worth pinning here is *where* CAM sits. Section 3.2 says it "operates on
+The thing worth pinning here is *where* CAM sits. Section 3.2 states it "operates on
 the temporal representations produced by the state space model", so it modulates
 the Mamba branch before that branch joins the residual stream. Applying it after
 the addition would let it rescale the skip connection as well, which Eq. 8 does not
@@ -20,7 +20,7 @@ from src.model.cfmamba.df_ffn import DualFrequencyFFN
 from src.model.cfmamba.vanilla_ffn import VanillaFFN
 
 cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="mamba_ssm's selective scan is CUDA-only"
+    not torch.cuda.is_available(), reason="Mamba-3's scan kernel is CUDA-only"
 )
 
 
@@ -29,7 +29,7 @@ def _block(dim: int = 16, **kwargs) -> ChannelAdaptiveMambaBlock:
 
 
 def test_cam_modulates_the_mamba_branch_not_the_residual_stream() -> None:
-    """Structural, so it holds without CUDA: forward must read
+    """Structural, so it keeps without CUDA: forward must read
     norm1(x + cam(mamba(x))), never cam(norm1(x + mamba(x)))."""
     import inspect
 
@@ -40,7 +40,7 @@ def test_cam_modulates_the_mamba_branch_not_the_residual_stream() -> None:
 
 
 def test_the_ffn_is_injected_so_ablations_swap_one_module() -> None:
-    dim = 8
+    dim = 16
     assert isinstance(_block(dim).ffn, VanillaFFN)
     assert isinstance(
         ChannelAdaptiveMambaBlock(dim, DualFrequencyFFN(dim, dim * 2)).ffn,

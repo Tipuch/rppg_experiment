@@ -1,7 +1,7 @@
 """The figure `cli predict` writes.
 
 Palette and conventions are the ones in tools/plot_loss.py and tools/sample_batch.py:
-CVD-validated against this surface, and every series direct-labelled because aqua
+CVD-validated against this surface, and every series direct-named because aqua
 sits at 2.74:1 against it -- under 3:1, so colour alone cannot carry identity.
 """
 
@@ -74,7 +74,7 @@ def plot(
     # Direct labels at the right-hand end. Text in ink; the mark beside it carries
     # the colour. Two traces that happen to end at the same height would print one
     # label over the other, so they are nudged apart -- the label is the only thing
-    # carrying identity here, since aqua and orange both sit under 3:1 against this
+    # bringing identity here, since aqua and orange both sit under 3:1 against this
     # surface.
     labels = [("predicted BVP", float(trace[-1]))]
     if truth is not None:

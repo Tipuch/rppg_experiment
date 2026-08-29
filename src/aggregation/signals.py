@@ -1,8 +1,8 @@
 """Derive HR, BR and HRV from raw physiological waveforms.
 
-Every function returns values in the units the schema declares: bpm for HR,
+Every function returns values in the units the schema announces: bpm for HR,
 breaths/min for BR, ms for HRV. None is returned when the window is too short or
-the signal carries no usable peak, rather than a fabricated number.
+the signal carries no usable peak, rather than a made up number.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from scipy import signal as sps
 HR_BAND = (0.7, 3.5)
 BR_BAND = (0.1, 0.5)
 
-# SDNN over a short record is dominated by how many beats happened to land in it.
+# SDNN over a short record is outweighed by how many beats happened to land in it.
 # Below this we return None instead of a number that looks precise and is not.
 MIN_HRV_SECONDS = 20.0
 MIN_HRV_BEATS = 8
@@ -103,7 +103,7 @@ def hrv_from_wave(wave: np.ndarray, fs: float) -> tuple[float | None, float | No
         return None, None
 
     sdnn = float(np.std(ibi_ms[good], ddof=1))
-    # RMSSD differences successive intervals, so a pair spanning a discarded beat
+    # RMSSD differences successive intervals, so a pair spanning a thrown away beat
     # is not a real succession. Difference first, then keep only adjacent pairs.
     adjacent = good[:-1] & good[1:]
     diffs = np.diff(ibi_ms)[adjacent]

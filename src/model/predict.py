@@ -70,7 +70,7 @@ def load_model(path: Path, device: str = "cuda") -> tuple[CFMambaPhys, TrainConf
     if "config" not in state:
         raise ValueError(
             f"{path} has no 'config' payload, so the architecture it was trained "
-            "with cannot be recovered. It predates the current checkpoint format."
+            "with cannot be recovered. It came before the current checkpoint format."
         )
     config = config_from_checkpoint(state["config"])
     model = build_model(config)
@@ -82,8 +82,8 @@ def clip_name(video: Path) -> str:
     """A name for this recording that includes its directory.
 
     The stem alone is not unique: every UBFC-rPPG recording is called `vid.avi`,
-    so a bare stem would write all 42 skin masks to build/masks/vid.npy and each
-    run would silently segment against the previous subject's face.
+    so a plain stem would write all 42 skin masks to build/masks/vid.npy and each
+    run would invisibly segment against the previous subject's face.
     """
     return f"{video.resolve().parent.name}__{video.stem}"
 
@@ -139,7 +139,7 @@ def prepare(
         resolution=config.resolution, frame_norm=config.frame_norm,
         apply_skin_mask=config.apply_skin_mask,
         return_waveform=has_truth,
-        # Never cached, and a stem that collided with a built clip_id would read
+        # Never cached, and a stem that clashed with a built clip_id would read
         # someone else's frames.
         cache_dir=None,
     )
@@ -192,7 +192,7 @@ def stitch(windows: np.ndarray) -> np.ndarray:
     Nothing in training fixed the scale: Eq. 19's temporal term is negative
     Pearson, which is invariant to a positive scale factor, so windows can come
     back at different amplitudes for the same loss. The sign is not invariant --
-    Pearson pins it -- so no sign alignment is needed.
+    Pearson fixes it -- so no sign alignment is needed.
 
     Seams are left where they fall and drawn in the plot.
     """

@@ -4,25 +4,25 @@ CFMamba states two numbers and no widths: **0.91M parameters** and **80.82M per
 frame at 128x128** (Table 4). Between them they are two equations in several
 unknowns -- dim, depth, stem width, FFN expansion, CAM's hidden width -- so they
 cannot pin the architecture alone. They can and do rule configurations out, and
-that is what this file is for. It runs before training, so a change that drifts
+that is what this file is for. It runs before training, so a change that moves
 the model away from the published cost fails here rather than three GPU-hours
 later.
 
-**The unit is MACs, not FLOPs.** Table 4 is labelled FLOPs, but its entries for
+**The unit is MACs, not FLOPs.** Table 4 is named FLOPs, but its entries for
 PhysNet (438.24), TS-CAN (744.45) and DeepPhys (744.45) are identical to the MACs
-column of RhythmMamba's Table 5. The table was carried over and relabelled. Torch's
+column of RhythmMamba's Table 5. The table was brought over and relabelled. Torch's
 FlopCounterMode reports 2 per MAC, hence the division below; reading the label
 literally would put the target at half the real figure and shrink the model into
 something that cannot fit the data.
 
-**Table 4 also settles Eq. 17.** The cost was measured on a 900-frame clip while
+**Table 4 also resolves Eq. 17.** The cost was measured on a 900-frame clip while
 training used 160-frame segments (Section 4.1), so the model must accept both. A
 (T, T) complex weight over the frequency axis -- the literal reading of Eq. 17's
-prose -- is fixed to one length and could not have produced that measurement. The
+text -- is fixed to one length and could not have produced that measurement. The
 channel-axis reading, which is both what Eq. 17's own reference to Eqs. 10-11
 implies and what FreTS (CFMamba [33]) actually does, has no such problem.
 
-**Reading the cited sources moved the fit, and improved it.** Two module shapes
+**Reading the referenced sources moved the fit, and improved it.** Two module shapes
 were wrong before FreTS and CMamba were read, and both errors were in the
 direction of too few parameters:
 
@@ -34,19 +34,19 @@ direction of too few parameters:
 With both corrected the configuration below reproduces the parameter count to
 -0.6% and the MAC count to -2.0%, against -2.9%/+2.1% for the best fit available
 beforehand. A reconstruction getting *closer* to two independent published numbers
-as its module shapes are corrected against the sources is the strongest evidence
-available here that the shapes are right.
+as its module shapes are corrected against the sources is the available evidence
+that the shapes are right.
 
 **What the fit does not establish.** Several configurations still land inside
-tolerance. What survived every sweep, before and after the corrections, is
-depth=4 and a stem width of 16; those are worth believing. The rest is a fit.
+tolerance. What remained across every configuration search, before and after the corrections, is
+depth=4 and a stem width of 16. The rest is a fit.
 
 **Where the budget cannot help at all.** CAM is the only module in the model that
 is parameter-heavy and compute-free -- Eq. 6 pools over T first, so its two MLPs
 run once per clip on a (B, C) vector rather than per frame. Measured, MACs per
 frame are identical to the second decimal at every expansion rate from 0.25 to 4.0,
-while parameters move from 0.879M to 1.265M. So the FLOP budget says nothing about
-that knob and the parameter budget says everything, which is why it is the one
+while parameters move from 0.879M to 1.265M. So the FLOP budget cannot constrain
+that control and the parameter budget fully determines it, which is why it is the one
 place a textual argument was allowed to win.
 """
 
@@ -65,22 +65,20 @@ RESOLUTION = 128
 # and 900 frames at 128x128 does not fit an 8 GB card.
 N_FRAMES = 160
 
-# 6% on parameters, not 5%. The extra point is spent knowingly, on one knob:
-# CAM's expansion rate is set to 1.0 on textual grounds -- it is the smallest value
-# that is genuinely an *expansion* rather than a bottleneck, and expansion is
-# CMamba's own word for it (its Appendix C.1) -- rather than on budget grounds.
-# That costs +5.04%.
-#
-# The alternative was re-fitting the other widths around it, and it is worse: with
-# r pinned at 1.0 the best available is dim=76 / ffn=152 / stem=16 at -4.42%
-# parameters and -3.2% MACs, a 7.6% total error against 7.0% for keeping dim=80.
-# So the model stays where every other sweep put it and the gate moves by the
-# amount the deliberate choice costs. Anything beyond 6% is still a regression.
-PARAM_TOLERANCE = 0.06
+# 4%, down from the 6% the Mamba-1 scan needed. CAM's expansion rate of 1.0 is a
+# textual choice costing +5.04%, and the gate had to fund it; Mamba-3 gave most of
+# that back -- 0.9559M to 0.9327M, +2.49% against the published 0.91M -- by
+# dropping the short conv and the x_proj and reducing A to one scalar per head.
+PARAM_TOLERANCE = 0.04
+
+# The scan is invisible to this count, and always was: FlopCounterMode decomposes
+# aten operators and a fused kernel is opaque to it. Measured, MACs/frame moved
+# 79.19M -> 79.15M across the swap. So this bounds the stem, PGA, CAM, the FFNs
+# and the predictor, and does not cover the recurrence between them.
 MACS_TOLERANCE = 0.10
 
 cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="mamba_ssm's selective scan is CUDA-only"
+    not torch.cuda.is_available(), reason="Mamba-3's scan kernel is CUDA-only"
 )
 
 
@@ -129,12 +127,12 @@ def test_the_default_pts_mode_can_accept_the_length_the_cost_was_measured_at() -
 
 
 def test_cam_expands_rather_than_squeezes() -> None:
-    """CMamba (CFMamba [32]) parameterises GDD-MLP by an expansion rate and warns
+    """CMamba (CFMamba [32]) parameterises GDD-MLP by an expansion rate and cautions
     that too small a value underfits. 1.0 is the smallest setting that is actually
     an expansion, making the hidden layer as wide as the stream.
 
     CMamba never prints the value it used: its A.2 gives an expansion rate of 1 for
-    a *different* module (M-Mamba's linear), and the GDD-MLP one is swept only in a
+    a *different* module (M-Mamba's linear), and the GDD-MLP one appears only in a
     rasterised figure. So this is not recoverable from the paper, and the choice is
     made on the word "expansion" rather than on a number.
     """
@@ -158,7 +156,7 @@ def test_cam_costs_parameters_but_not_compute() -> None:
 @cuda
 def test_the_full_pts_reading_is_ruled_out_by_the_900_frame_measurement() -> None:
     """Kept as an implemented alternative, and shown here to be inconsistent with
-    the paper's own cost table rather than merely disfavoured."""
+    the paper's own cost table rather than only disfavoured."""
     model = CFMambaPhys(pts_mode="full", n_frames=160).cuda().eval()
     with pytest.raises(ValueError, match="cannot accept"), torch.no_grad():
         model(torch.rand(1, 900, 3, 8, 8, device="cuda"))

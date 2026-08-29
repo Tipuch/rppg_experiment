@@ -3,20 +3,20 @@
 The selective state space model at the heart of Mamba runs each channel through
 its own recurrence and mixes channels only through linear projections, so it
 cannot reweight a channel by how trustworthy that channel is. In rPPG the channels
-differ enormously: some carry a coherent pulse, others carry a motion artefact or
+differ enormously: some carry a coherent pulse, others carry a motion artifact or
 an illumination glitch. CAM estimates that reliability from the whole clip at once
 and rescales every channel accordingly.
 
 Removing it costs the paper 0.62 -> 0.78 RMSE on UBFC-rPPG and 6.59 -> 8.63 on
 VIPL-HR (Table 5).
 
-CFMamba Eqs. 6-8 are a near-verbatim port of CMamba's GDD-MLP (Zeng et al.,
-arXiv:2406.05316, Eqs. 5-6), which CFMamba cites as [32]. Two things follow from
+CFMamba Eqs. 6-8 are a near-exact port of CMamba's GDD-MLP (Zeng et al.,
+arXiv:2406.05316, Eqs. 5-6), which CFMamba references as [32]. Two things follow from
 reading that source, and neither is inferable from CFMamba alone:
 
-**The hidden layer expands, it does not squeeze.** CMamba calls its width knob an
+**The hidden layer expands, it does not squeeze.** CMamba calls its width control an
 "expansion rate r" and reports that too small a value underfits. That is the
-opposite of the squeeze-and-excitation convention CFMamba cites separately as
+opposite of the squeeze-and-excitation convention CFMamba references separately as
 [31], which would have put a bottleneck here. Sizing this as a bottleneck costs
 roughly 28k parameters per block at dim=96 -- enough to matter against a 0.91M
 budget.
@@ -26,9 +26,9 @@ runs the average and max descriptors through a shared MLP and sums the *outputs*
 CFMamba Eq. 6 sums the *descriptors* and applies the MLP once. CMamba's is the
 default here, because the two are not equivalent and its version is the one with
 an ablation behind it: summing first lets a large average cancel a large max
-before either reaches a non-linearity, so a channel with a strong steady level and
-a strong transient can end up indistinguishable from a quiet one. Summing after
-keeps them separable. Same parameter count either way, and `pooling="cfmamba"`
+before either reaches a non-linearity, so a channel with a strong stable level and
+a strong transient can end up impossible to tell apart from a quiet one. Summing after
+keeps them divisible. Same parameter count either way, and `pooling="cfmamba"`
 restores the literal Eq. 6.
 """
 
@@ -55,7 +55,7 @@ class ChannelAdaptiveModulation(nn.Module):
         self.pooling = pooling
         # CFMamba calls these "lightweight" but gives no width. CMamba, the source
         # of the design, parameterises them by an expansion rate; the value is
-        # settled by the published parameter budget in tests/test_budget.py.
+        # resolved by the published parameter budget in tests/test_budget.py.
         self.expansion = expansion
         hidden = max(1, round(dim * expansion))
         self.scale = nn.Sequential(
@@ -91,5 +91,5 @@ class ChannelAdaptiveModulation(nn.Module):
         weight = torch.sigmoid(self._project(self.scale, average, peak)).unsqueeze(1)
         bias = torch.sigmoid(self._project(self.shift, average, peak)).unsqueeze(1)
         # Eq. 8, broadcast over T so every time step in a channel is modulated
-        # identically -- the point is to reweight channels, not to re-time them.
+        # the same -- the point is to reweight channels, not to re-time them.
         return weight * x + bias

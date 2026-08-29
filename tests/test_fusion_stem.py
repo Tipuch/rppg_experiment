@@ -2,7 +2,7 @@
 
 The stem is where a silent off-by-one is most expensive. Its 3D convolution has a
 kernel of 2 on the time axis, so an unpadded forward pass returns T-1 frames --
-which every layer downstream would happily accept while every target sat one frame
+which every layer downstream would readily accept while every target was one frame
 out of step with its features.
 """
 
@@ -27,7 +27,7 @@ def test_differences_are_the_four_consecutive_gaps_across_five_frames() -> None:
 
 
 def test_reverse_ordering_is_exactly_a_sign_flip() -> None:
-    """The two source papers disagree on this, and the disagreement is inert: the
+    """The two source papers disagree on this, and the conflict is dead: the
     first convolution is linear, so a negated input is a negated weight."""
     x = torch.randn(1, 8, 3, 4, 4)
     assert torch.allclose(
@@ -40,7 +40,7 @@ def test_the_clip_boundary_clamps_instead_of_wrapping() -> None:
     step discontinuity at exactly the frequencies rPPG reads."""
     x = torch.randn(1, 6, 3, 4, 4)
     diffs = temporal_differences(x, reverse=False)
-    # At t=0 the stack is X[0,0,0,1,2], so the first two differences must vanish.
+    # At t=0 the stack is X[0,0,0,1,2], so the first two differences must disappear.
     assert torch.allclose(diffs[0, 0, 0:3], torch.zeros(3, 4, 4), atol=1e-6)
     assert torch.allclose(diffs[0, 0, 3:6], torch.zeros(3, 4, 4), atol=1e-6)
     # And the last frame's forward differences likewise.

@@ -109,7 +109,7 @@ def test_attention_energy_is_normalised_per_channel_and_frame() -> None:
 def test_the_prior_actually_reweights_the_pooled_output() -> None:
     """A left-biased mask and a right-biased mask must not pool to the same thing.
 
-    If they do, the prior is wired up but inert -- the failure mode that would
+    If they do, the prior is wired up but dead -- the failure mode that would
     make the PGA ablation come out flat.
     """
     pga = PhysiologyGuidedAttention()

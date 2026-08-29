@@ -1,6 +1,6 @@
 """The assembled model, CFMamba Fig. 2.
 
-What only the assembly can get wrong: the order of the stages, T surviving from
+What only the assembly can get wrong: the order of the stages, T remaining from
 input to output, and whether each ablation flag actually reaches anything.
 """
 
@@ -14,7 +14,7 @@ from src.model.cfmamba.model import CFMambaPhys
 from src.model.cfmamba.pga import PhysiologyGuidedAttention
 
 cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="mamba_ssm's selective scan is CUDA-only"
+    not torch.cuda.is_available(), reason="Mamba-3's scan kernel is CUDA-only"
 )
 
 
@@ -95,7 +95,7 @@ def test_diagonal_mode_generalises_to_an_unseen_clip_length() -> None:
 
 @cuda
 def test_the_skin_mask_changes_the_prediction() -> None:
-    """PGA is wired to the mask, not merely handed it."""
+    """PGA is wired to the mask, not only given it."""
     torch.manual_seed(0)
     model = _small().cuda().eval()
     frames = torch.rand(1, 32, 3, 128, 128, device="cuda")

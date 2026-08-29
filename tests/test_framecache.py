@@ -5,10 +5,10 @@ The cache exists because UBFC-rPPG is uncompressed rawvideo: one 640x480 frame i
 face box. Caching the box cuts that 6.4x -- but only if the window it hands back is
 the same window.
 
-"The same" is defined here rather than assumed, because it cannot be bit-identity
+"The same" is defined here rather than presumed, because it cannot be bit-identity
 against ffmpeg. Measured: ffmpeg's `fps=` filter is pure nearest-frame selection --
 every frame it delivers is an exact source frame, never an interpolation -- but it
-selects with a running accumulator, while index arithmetic rounds each frame
+selects with a running running sum, while index arithmetic rounds each frame
 independently. The two agree on the anchor exactly and disagree by at most one
 source frame (35 ms at 28.7 fps) on the duplication boundaries where 28.7 fps is
 stretched to 30.
@@ -165,7 +165,7 @@ def test_the_dataset_prefers_the_cache_and_agrees_with_the_decoder(clip, cache) 
 
     Evaluation settings, so nothing is random and the only thing that can differ is
     the tie-break frame. The tolerance is on the mean absolute difference of the
-    standardised tensor, which a genuine misalignment -- a shifted window, a wrong
+    standardised tensor, which a real misalignment -- a shifted window, a wrong
     crop, a flipped mask -- would blow through by orders of magnitude.
     """
     import polars as pl
@@ -201,7 +201,7 @@ def test_a_clip_with_no_cache_entry_still_loads(clip, tmp_path) -> None:
 #
 # `probe` costs 650 ms on an MCD clip, against 130 ms to decode the window it is
 # describing. MCD's AVIs carry no usable duration, so `_probe_uncached` falls back
-# to `_duration_from_keyframes`, which walks the whole keyframe index in a second
+# to `_duration_from_keyframes`, which steps through the whole keyframe index in a second
 # subprocess. The LRU cache hides that only once a worker has seen the clip, and
 # with 3,600 clips across 12 workers it is cold for most of the first epoch.
 #

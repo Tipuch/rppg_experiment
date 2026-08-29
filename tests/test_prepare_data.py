@@ -1,9 +1,9 @@
 """Data preparation: segment enumeration, the 85/10/5 split, frame normalisation.
 
-Every one of these guards something that fails silently. A split that leaks gives
+Every one of these guards something that fails invisibly. A split that leaks gives
 a better score. A ratio computed over clips instead of segments gives the wrong
 number of examples with the right number of recordings. A normalisation applied
-per channel flattens the chrominance the pulse lives in.
+per channel flattens the chrominance the pulse resides in.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def test_a_clip_shorter_than_one_window_still_contributes() -> None:
 
 def test_the_default_stride_reproduces_the_toolbox_chunking() -> None:
     """rPPG-Toolbox does `frames[i*160:(i+1)*160]` for `n_frames // 160` chunks --
-    strictly non-overlapping, partial tail discarded. That is what all three papers
+    strictly non-overlapping, partial tail thrown away. That is what all three papers
     ran under ("dividing them into fixed segments of 160 frames"), so the default
     has to match it exactly, not approximately.
     """
@@ -85,7 +85,7 @@ def test_an_exact_multiple_does_not_lose_a_segment_to_floating_point() -> None:
 
 def test_no_segment_runs_past_the_end_of_its_clip() -> None:
     """The tail is dropped rather than padded, as the toolbox does. Padding would
-    feed the model repeated frames and score them as if they were recorded."""
+    feed the model repeated frames and score them as if they were logged."""
     span = 160 / TARGET_FPS
     segments = expand_to_segments(_manifest(1, seconds=68.2), 160, TARGET_FPS)
     assert (segments["window_start_s"] + span <= 68.2 + 1e-6).all()
@@ -132,7 +132,7 @@ def test_the_ratios_hold_even_when_clip_lengths_are_wildly_uneven() -> None:
     The underlying splitter balances by row count. Hand it clips and "row" means
     "recording", so a corpus mixing 20 s and 400 s clips lands 85/10/5 in
     recordings and something else in examples. Hand it segments and the two
-    coincide. This corpus is deliberately 20x skewed, which is more extreme than
+    coincide. This corpus is intentionally 20x skewed, which is more extreme than
     the real one (UBFC 43-118 s against MCD 111-225 s).
     """
     brief = _manifest(20, seconds=20.0)
@@ -165,7 +165,7 @@ def test_standardization_uses_one_scalar_for_the_whole_window() -> None:
     """BaseLoader.standardized_data uses a single mean and std, not per channel.
 
     Per channel would flatten the chrominance differences between R, G and B, and
-    the pulse lives in exactly those -- haemoglobin absorbs green far more than
+    the pulse resides in exactly those -- haemoglobin absorbs green far more than
     red. Per frame would be worse: it would remove the frame-to-frame brightness
     change that *is* the signal.
     """
@@ -174,7 +174,7 @@ def test_standardization_uses_one_scalar_for_the_whole_window() -> None:
     frames[:, 1] += 40.0                                   # green sits higher
     # Expected gap is computed from the actual channel means, not the nominal +40:
     # with 2048 samples per channel the sample means differ by 40 +/- 2.3, so
-    # asserting against 40 would be testing the random seed.
+    # checking against 40 would be testing the random seed.
     expected = float(
         (frames[:, 1].mean() - frames[:, 0].mean()) / frames.std()
     )
@@ -209,7 +209,7 @@ def test_an_unknown_normalisation_is_refused() -> None:
 # --- MCD's frame-aligned waveform --------------------------------------------
 
 def test_mcd_ppg_is_read_as_one_sample_per_frame(tmp_path) -> None:
-    """MCD ships no timestamps because it needs none: ppg_sync is already
+    """MCD releases no timestamps because it needs none: ppg_sync is already
     frame-synchronised, so the time axis comes from the video's frame rate."""
     from src.model.waveform import load_ppg
 
@@ -240,10 +240,10 @@ def test_a_clip_with_no_waveform_returns_none(tmp_path) -> None:
 # --- geometry: one resample, in the right direction ---------------------------
 
 def test_inter_area_enlarging_is_nearest_neighbour() -> None:
-    """The defect that motivated removing the 256 intermediate.
+    """The fault that motivated removing the 256 intermediate.
 
     94% of clips have a face box smaller than 256, so the old chain enlarged to 256
-    before shrinking to 128 -- and cv2.INTER_AREA enlarging is bit-identical to
+    before shrinking to 128 -- and cv2.INTER_AREA enlarging is exactly equal to
     INTER_NEAREST. Pinned here because it is surprising, undocumented in the OpenCV
     signature, and the reason `_resize` branches on direction at all.
     """
@@ -271,7 +271,7 @@ def test_shrinking_preserves_the_mean() -> None:
     The signal is a spatially smooth sub-LSB brightness change, so what has to
     survive downsampling is the local mean. An area filter integrates every source
     pixel that lands in an output pixel and preserves it; linear point-samples and
-    drifts.
+    aliases.
     """
     rng = np.random.default_rng(1)
     image = (rng.random((235, 235)).astype(np.float32) * 40 + 120)
@@ -283,7 +283,7 @@ def test_shrinking_preserves_the_mean() -> None:
 
 
 def test_a_uniform_brightness_step_survives_downsampling_exactly() -> None:
-    """The pulse *is* a uniform brightness step. It must pass through untouched."""
+    """The pulse *is* a uniform brightness step. It must pass through unchanged."""
     base = np.full((235, 235), 120.0, dtype=np.float32)
     stepped = base + 0.3                                   # a sub-LSB pulse
     delta = WindowDataset._resize(stepped, 128) - WindowDataset._resize(base, 128)
@@ -352,7 +352,7 @@ def test_the_mask_window_tracks_the_frame_window() -> None:
     #   bottom-right window [32:256] covers rows 32-127 x cols 32-127 -> 96^2/224^2
     #
     # An 87.5% crop cannot isolate a quadrant, so the two necessarily overlap; what
-    # this asserts is that sliding the window slides the coverage, by the right
+    # this checks is that sliding the window slides the coverage, by the right
     # amount and in the right direction.
     assert top_left.shape == (224, 224)
     assert float(top_left.mean()) == pytest.approx(128**2 / 224**2, abs=0.01)

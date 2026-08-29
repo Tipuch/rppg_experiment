@@ -7,7 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "click>=8.4.2",
     "h5py>=3.16.0",
-    "mamba-ssm>=2.3",
+    "mamba-ssm>=2.3.2",
     # Arrives transitively via wfdb, but src/model/predict_plot.py imports it
     # directly and tools/ has for longer. A transitive graph is not a contract.
     "matplotlib>=3.11",
@@ -27,7 +27,7 @@ dependencies = [
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
-override-dependencies = ["mamba-ssm>=2.3"]
+override-dependencies = ["mamba-ssm>=2.3.2"]
 no-build-isolation-package = ["mamba-ssm"]
 
 [dependency-groups]

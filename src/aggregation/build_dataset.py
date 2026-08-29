@@ -42,7 +42,7 @@ def main() -> int:
         t = time.time()
         try:
             got = fn(root, STORE)
-        except Exception as exc:  # noqa: BLE001 - one unreadable record must not end the pass  # one bad source must not sink the build
+        except Exception as exc:  # noqa: BLE001 - one illegible record must not end the pass  # one bad source must not sink the build
             print(f"  {name:9} ERROR {type(exc).__name__}: {exc}")
             continue
         rows.extend(got)

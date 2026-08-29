@@ -54,7 +54,7 @@ def load_model(device: str | None = None) -> tuple[SegFaceCeleb, str]:
         model = SegFaceCeleb(INPUT_RES, "swin_base")
         # weights_only=True refuses to unpickle arbitrary objects. These are
         # third-party weights, so try the safe path first and only fall back
-        # if the checkpoint genuinely wraps non-tensor state.
+        # if the checkpoint really wraps non-tensor state.
         try:
             state = torch.load(WEIGHTS, map_location="cpu", weights_only=True)
         except Exception:  # noqa: BLE001 - fall back to the colour heuristic if SegFace fails
@@ -116,7 +116,7 @@ def normalise_brightness(
 
     Y is re-centred to 128 rather than clipped at 0, because Y - mean goes
     negative for half the pixels and clipping would discard that half. Cb and Cr
-    are left untouched: chrominance carries pulse information too.
+    are left unchanged: chrominance carries pulse information too.
     """
     out = np.zeros_like(frames_rgb)
     mean_y = np.zeros(len(frames_rgb), dtype=np.float32)

@@ -8,7 +8,7 @@ scale of the errors the trained models produce.
 
 Predicting the pulse waveform instead gives one target per frame, and heart rate
 is then read off the predicted waveform by FFT rather than learned. The label also
-stops lying: a clip-level median differs from the true heart rate of any given
+stops untruthful: a clip-level median departs from the true heart rate of any given
 5.33 s window by 4.02 bpm on average.
 """
 
@@ -46,7 +46,7 @@ def load_ppg(
     against 5391 frames on the first clip checked, and within a handful across a
     random sample of twelve.
 
-    CLBP-300 is absent deliberately: its five clips ship as bare .mov files with
+    CLBP-300 is absent intentionally: its five clips ship as plain .mov files with
     the labels encoded in the filename and no waveform at all, so they cannot
     support per-frame supervision.
     """
@@ -129,7 +129,7 @@ def hr_from_waveform(
     Zero-padded to 8x length before the FFT. Padding does not add information, but
     it interpolates the spectrum so the peak is not forced onto a coarse bin grid:
     at 160 frames and 30 fps the raw bins are 11.25 bpm apart, which is wider than
-    the accuracy being asked for.
+    the accuracy being requested for.
     """
     wave = np.asarray(wave, dtype=np.float64)
     wave = wave - wave.mean()

@@ -135,7 +135,7 @@ def test_differencing_a_ppg_target_moves_the_peak_to_the_harmonic():
 
 
 def test_neg_pearson_matches_the_physnet_reference():
-    """Cross-check against the PhysNet formulation vendored in tools/rPPG-Toolbox.
+    """Verify against the PhysNet formulation vendored in tools/rPPG-Toolbox.
 
     That file (neural_methods/loss/PhysNetNegPearsonLoss.py) is the original
     author's code, written as an explicit sum-of-products over each batch row.

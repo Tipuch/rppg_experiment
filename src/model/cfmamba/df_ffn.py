@@ -11,8 +11,8 @@ does its mixing in the frequency domain instead, in the two stages Fig. 4 names:
 This file is only the wrapper: expand C -> N, run the two stages, project back.
 CFMamba Table 5 measures what each part is worth on UBFC-rPPG -- 0.36 MAE with the
 whole thing, 0.45 with no frequency processing at all, and 0.59 with a vanilla
-time-domain FFN, which is the paper's argument that naive channel mixing actively
-fights the periodic structure rather than merely failing to use it.
+time-domain FFN, which is the paper's argument that unweighted channel mixing
+fights the periodic structure rather than only failing to use it.
 """
 
 from __future__ import annotations
@@ -56,12 +56,12 @@ class DualFrequencyFFN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         projected = self.proj_in(x)
-        # FFT has no autocast kernel, and complex arithmetic in bf16 loses far more
+        # FFT has no autocast kernel, and complex arithmetic in bf16 forfeits far more
         # than the memory is worth on a 0.9M-parameter model, so the whole spectral
         # section runs in float32 whatever the surrounding autocast context.
         with torch.autocast(x.device.type, enabled=False):
             spectral = self.pts(self.cs(projected.float()))
         # No activation here. Section 3.3 puts none anywhere, and the one this
-        # module needs now lives inside the two complex linears, where FreTS Eq. 7
+        # module needs now resides inside the two complex linears, where FreTS Eq. 7
         # puts it. An extra GELU at this point was an earlier invention.
         return self.proj_out(spectral.to(x.dtype))

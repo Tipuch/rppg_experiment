@@ -13,7 +13,7 @@ Three things have to come back or the continuation is a different experiment:
               length is `steps_per_epoch * epochs`, so a fresh scheduler restarts
               warmup and jumps the LR back to its peak -- a warm restart, not a
               resume.
-  history     the per-epoch records, or the saved history loses every epoch before
+  history     the per-epoch records, or the saved history forfeits every epoch before
               the resume.
 
 And because the cosine's shape is a function of `epochs`, `batch_size`, `n_frames`
@@ -93,7 +93,7 @@ def test_the_next_epoch_and_history_survive(tmp_path) -> None:
     assert state["steps_per_epoch"] == 13418
 
 
-# --- the guard against continuing a different schedule ------------------------
+# --- the safeguard against continuing a different schedule ------------------------
 
 
 def test_a_matching_config_is_resumable() -> None:

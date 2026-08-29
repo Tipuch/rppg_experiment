@@ -132,8 +132,8 @@ def test_the_composite_is_lowest_for_an_exact_prediction() -> None:
 
 
 def test_the_terms_are_reported_separately() -> None:
-    """They fail differently -- a stalled temporal term means an uncorrelated
-    waveform, a stalled frequency term means the wrong periodicity -- and one
+    """They fail differently -- a stuck temporal term means an uncorrelated
+    waveform, a stuck frequency term means the wrong periodicity -- and one
     summed number cannot tell those apart."""
     total, parts = composite_loss(_tone(80.0), _tone(72.0), FPS)
     assert set(parts) == {"loss", "time", "freq"}

@@ -83,8 +83,8 @@ def test_reducing_to_one_pixel_is_equivalent_to_float32_summation_order() -> Non
     "Equivalent" here means to float32 summation order, not bit-exactly: gathering
     1024 skin pixels and averaging along one axis builds a different pairwise-sum
     tree than averaging over two axes, and the two land ~6e-6 apart on a value of
-    0.55. Worth stating rather than hiding behind a loose tolerance, because the
-    pulse being measured is only 0.01 in the same units -- the disagreement is
+    0.55. Worth recording rather than hiding behind a loose tolerance, because the
+    pulse being measured is only 0.01 in the same units -- the conflict is
     0.06% of the signal, which is tolerable, and would not be if it were 10x worse.
     """
     frames = _clip(72.0)

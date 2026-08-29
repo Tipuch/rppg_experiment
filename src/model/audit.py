@@ -7,7 +7,7 @@ Nothing downstream recovers it, so this has to be measured before training rathe
 than inferred afterwards from a disappointing score.
 
 For each clip: take the mean skin luma trace, look for a cardiac peak, and compare
-it against the labelled heart rate.
+it against the named heart rate.
 
     uv run python -m src.cli audit
 """
@@ -68,8 +68,8 @@ def analyse_trace(mean_y: np.ndarray, label_hr: float) -> dict:
 def run(
     manifest: pl.DataFrame, n_frames: int = 300, workers: int = 8
 ) -> pl.DataFrame:
-    # Heart rate only. The audit compares a spectral peak against the labelled HR
-    # and never touches blood pressure, and a BP-less source such as UBFC-rPPG has
+    # Heart rate only. The audit compares a spectral peak against the named HR
+    # and never modifies blood pressure, and a BP-less source such as UBFC-rPPG has
     # nulls in those columns that would fail the tensor conversion.
     dataset = WindowDataset(
         manifest, n_frames=n_frames, train=False, targets=("hr_bpm",),

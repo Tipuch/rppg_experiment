@@ -3,14 +3,14 @@
 Eight datasets on disk, ~225 GiB actual. Categorised by what they can actually be used for,
 which is not the same as what they nominally contain.
 
-The decisive question for any rPPG source is **does the video contain a recoverable
-pulse**, and it is measured, not assumed:
+The conclusive question for any rPPG source is **does the video contain a recoverable
+pulse**, and it is measured, not presumed:
 
     uv run python -m src.cli audit --manifest build/clips.parquet
 
 A clip passes when its mean-skin-luma spectrum has a cardiac peak that (a) is not
-pinned to the bottom of the search band, (b) stands clear of the noise floor, and
-(c) agrees with the labelled HR within 10 bpm. Chance agreement is ~12%, so a pass
+pinned to the bottom of the search band, (b) remains clear of the noise floor, and
+(c) agrees with the named HR within 10 bpm. Chance agreement is ~12%, so a pass
 rate below that means no signal at all.
 
 ---
@@ -42,8 +42,8 @@ Filtering on pixel-only criteria (peak exists, prominence >= 3) keeps 38 clips, 
 those agree with the label 65.8% of the time -- scored after selection, never used
 for it. `build/clips_clean_ubfc.parquet`.
 
-The single clip checked before the rest arrived reproduces exactly: `10-gt` returns
-**70.3 bpm against a labelled 72**, prominence 82.
+The single clip checked before the rest came in reproduces exactly: `10-gt` returns
+**70.3 bpm against a named 72**, prominence 82.
 
 **Frame rate is not 30 and not constant.** DATASET_1 runs at 28.67 fps; DATASET_2
 ranges 28.77-29.98 fps, except subjects **25, 26 and 27, which run at 23.2-23.4
@@ -73,22 +73,22 @@ readout was not.
 **This matters less than it looks.** `clips.py` already takes a median over
 physiological values rather than a mean, and that median sits **2.05 bpm** from a
 Welch estimate on the contact PPG across all 42 subjects. Relabelling from the PPG
-moves the audit from 21/42 to 23/42 -- worth doing, not decisive. The one genuine
-casualty is **subject24: labelled 96 bpm, PPG says 127.2**, and it passes the audit
+moves the audit from 21/42 to 23/42 -- worth doing, not conclusive. The one real
+casualty is **subject24: named 96 bpm, PPG states 127.2**, and it passes the audit
 against the PPG figure and fails against the label.
 
 DATASET_1's 62 Hz oximeter has no dropouts at all and reaches 148 bpm on
 `after-exercise`.
 
 **Two DATASET_1 videos are unlabelled.** Google Drive stripped the folder names
-from five DATASET_1 clips; three were matched to their subject by duration, and
+from five DATASET_1 clips; three were equal to to their subject by duration, and
 `6-gt` vs `12-gt` is an exact tie. Those two sit in
 `DATASET_1/_UNRESOLVED_6gt_or_12gt/` and must stay out of any split until a
-spectral HR estimate separates them -- their labelled HRs differ by 12 bpm. See
+spectral HR estimate separates them -- their named HRs differ by 12 bpm. See
 `DATASET_1/_UNRESOLVED_NOTE.md`.
 
 The 40 source zips were deleted on 2026-08-24 after verifying all 45 zipped
-videos on disk byte-for-byte against the archive manifest. UBFC-rPPG is now
+videos on disk exactly against the archive manifest. UBFC-rPPG is now
 local-only: the Drive folder was quota-blocked for over 24 h during the original
 download, so re-acquiring it is not quick.
 
@@ -112,7 +112,7 @@ data use agreement; only the free 5-subject sample is here.
 
 | | |
 |---|---|
-| on disk | **128 GiB actual** (`du` says 249 GiB; see below) |
+| on disk | **128 GiB actual** (`du` states 249 GiB; see below) |
 | scale | 3600 recordings, 600 subjects, 180 h |
 | labels | SBP, DBP, HR, respiration, SpO2 -- complete, no nulls |
 | video | **MPEG-4 Part 2 Simple Profile, 640x480, 0.12-0.39 bits/pixel** |
@@ -129,15 +129,15 @@ supports them:
   with the subject nearly still -- a cliff then a 4 s exponential recovery. A pulse
   is 0.1-0.5 LSB. Note AGC appears in CLBP-300 too, so it does not separate the two
   corpora on its own.
-- **Compression.** MPEG-4 SP at 0.12-0.39 bpp with 4:2:0 chroma is hostile to a
-  sub-percent, spatially smooth signal. A controlled bitrate sweep was inconclusive.
+- **Compression.** MPEG-4 SP at 0.12-0.39 bpp with 4:2:0 chroma is unfriendly to a
+  sub-percent, spatially smooth signal. A controlled bitrate search was undecided.
 
 **Still useful for:** 3.6 GB of real 12-lead ECG and 700 MB of contact PPG, both
-with genuine pulses -- a legitimate PPG-to-BP pretraining corpus. And appearance
+with real pulses -- a valid PPG-to-BP pretraining corpus. And appearance
 -based correlates (age, adiposity) which is what the trained model actually latched
 onto.
 
-**There is no 120 GB of duplication to reclaim, despite what `du` says.** The
+**There is no 120 GB of duplication to reclaim, despite what `du` states.** The
 working tree and `.git/lfs/objects` already share extents through btrfs reflinks,
 so `du -sh` double-counts every video. Measured:
 
@@ -170,7 +170,7 @@ pressure rather than a single number.
 | dataset | on disk | why it is here |
 |---|---|---|
 | **SCAMPS** | 3.6 GB | 2800 synthetic clips (labels, `.mat` and `.csv` -- the same 20 signals twice) + 10 videos. PPG, ECG and breathing waveforms, plus pose and 13 action units. Official 2000/400/400 split. Synthetic, so useful for pretraining only. |
-| **MR-NIRP** | 2.8 GB | 1 of 15 indoor sessions: `Subject3_motion_940`, 1817 NIR + 1815 RGB 16-bit PGM frames, `pulseOx.mat` ground truth. RGB is raw Bayer with no stated CFA pattern, so only the NIR stream is usable. `indoor/Subject1/` is an **empty stub** -- 0 files. Remaining sessions quota-blocked. |
+| **MR-NIRP** | 2.8 GB | 1 of 15 indoor sessions: `Subject3_motion_940`, 1817 NIR + 1815 RGB 16-bit PGM frames, `pulseOx.mat` ground truth. RGB is raw Bayer with no given CFA pattern, so only the NIR stream is usable. `indoor/Subject1/` is an **empty stub** -- 0 files. Remaining sessions quota-blocked. |
 
 ---
 
@@ -199,20 +199,20 @@ three for 3 clips.
 What changed on 2026-08-23: UBFC-rPPG went from 1 video to all 50, and the audit
 on 2026-08-24 put **25 of 48 clips (52.1%) above the pulse threshold** -- twelve
 times MCD-rPPG's rate and four times chance. That does not give the project blood
-pressure. It does give it a corpus where heart rate is genuinely learnable, and a
+pressure. It does give it a corpus where heart rate is really learnable, and a
 pulse-extraction trunk that a BP head could later sit on.
 
 The audit's own resolution is now the binding constraint, not the data. `nperseg`
-is capped at 256 samples, so the spectrum has 7.03 bpm bins against a 10 bpm
+is limited at 256 samples, so the spectrum has 7.03 bpm bins against a 10 bpm
 tolerance, and lengthening the window does not help: 300 frames scores 52.1% and
 900 frames scores 50.0%, with peakless rising from 20.8% to 29.2% as the longer
-window admits more drift. A finer estimator would likely move the number; a longer
+window allows more drift. A finer estimator would likely move the number; a longer
 one will not.
 
 ## The process lesson
 
-Three training runs, ~10 GPU hours, all converged to predicting the training mean
-before the data was checked. The audit that settles it takes 20 minutes and exists
+Three training runs, ~10 GPU hours, all stabilised to predicting the training mean
+before the data was checked. The audit that resolves it takes 20 minutes and exists
 only because those runs failed.
 
 **Audit before acquiring, and certainly before training.** For a candidate dataset,

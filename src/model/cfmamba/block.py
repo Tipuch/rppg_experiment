@@ -7,7 +7,7 @@ Where CAM sits is the substance of CFMamba Section 3.2: it "operates on the
 temporal representations produced by the state space model", so it modulates the
 Mamba branch *before* that branch joins the residual stream. Putting it after the
 addition would let it rescale the skip connection too, which is not what Eq. 8
-says and would make a stack of L layers compound the attenuation.
+states and would make a stack of L layers compound the attenuation.
 
 Where the DF-FFN sits is Section 3.3: "positioned after the channel-adaptive
 Mamba layer ... before residual aggregation".
@@ -32,7 +32,7 @@ class ChannelAdaptiveMambaBlock(nn.Module):
         use_cam: bool = True,
         cam_expansion: float = 1.0,
         cam_pooling: str = "cmamba",
-        **mamba: int,
+        **mamba: float | str,
     ) -> None:
         super().__init__()
         self.mamba = MultiTemporalMamba(dim, **mamba)

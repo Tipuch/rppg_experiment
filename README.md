@@ -5,12 +5,15 @@ Processing and Control* 126 (2026) 110996), a frequency-aware state space model
 that predicts a blood-volume-pulse waveform from face video. Heart rate is derived
 from the predicted waveform by band-pass and periodogram, not regressed directly.
 
-0.9559M parameters, 79.19M MACs per frame. Published figures are 0.91M and 80.82M.
+0.9327M parameters, 79.15M MACs per frame. Published figures are 0.91M and 80.82M.
+
+The scan is Mamba-3 (arXiv:2603.15569) rather than the Mamba-1 selective scan the
+source papers call; see `ARCHITECTURE.md` §4.1.
 
 ## Requirements
 
-CUDA is required: `mamba_ssm`'s selective scan has no CPU kernel. All other modules
-are plain PyTorch and are tested on CPU.
+CUDA is required: Mamba-3's scan is a Triton kernel with no CPU path. All other
+modules are plain PyTorch and are tested on CPU.
 
 Two directories are not distributed with this repository:
 
@@ -63,14 +66,14 @@ manifest and read from there at training time.
 
 `cache` decodes each clip's face box once at native resolution and native frame
 rate into a `uint8` array. `remux` rewrites MCD-rPPG's AVI container with
-`-c copy`, which copies every video packet verbatim and changes no pixel; those
+`-c copy`, which copies every video packet unchanged and changes no pixel; those
 files report `duration_ts=0` and no frame count, so `-ss` cannot seek and decodes
 forward from frame 0. The output stays AVI because MP4 and MKV drop three frames
 mid-stream on the 29.9167 fps clips, which shifts every subsequent frame and
 desynchronises the contact-PPG target from the video.
 
 `audit` reports the fraction of clips whose mean-skin-luma spectrum has a cardiac
-peak agreeing with the labelled heart rate. Chance agreement is approximately 12%.
+peak agreeing with the named heart rate. Chance agreement is approximately 12%.
 
 ## Loss
 
@@ -137,7 +140,7 @@ learning rate is large, and a single run does not establish the result.
 moment estimates, and the learning-rate scheduler's step counter. The schedule is a
 linear warmup into a cosine of length `steps_per_epoch * epochs`, so `--epochs`,
 `--batch`, `--frames` and the step count per epoch must match the checkpoint. A
-mismatch raises rather than silently continuing a different schedule.
+mismatch raises rather than continuing a different schedule without notice.
 
 `history.json` and `last.pt` are written after every epoch.
 
@@ -148,12 +151,12 @@ uv run python -m pytest tests/ -q     # 391 tests, requires an idle GPU
 ```
 
 One test file per module, named for the paper equation it constrains. Several are
-regressions for defects that produced no error:
+regressions for faults that produced no error:
 
 - a frequency band selected by FFT bin index covered 45-202 bpm at T=160 and
   24-108 bpm at T=300 (`tests/test_band_mask.py`)
 - a repointed manifest severed MCD's contact PPG from its clips, so `load_ppg`
-  returned None and the target became zeros for a full epoch
+  returned None and the target turned into zeros for a full epoch
   (`tests/test_remux.py`)
 - the per-item augmentation RNG was seeded from a constant, so every segment saw
   one fixed crop and one fixed flip for an entire run (`tests/test_augment.py`)

@@ -6,7 +6,7 @@ with the thing it controls for tends to drift into it.
 CFMamba Table 5 puts this at 0.59 MAE on UBFC-rPPG against DF-FFN's 0.36, and 4.70
 against 4.03 on VIPL-HR. On UBFC it is *worse* than removing frequency processing
 altogether (0.45), which is the paper's evidence that pointwise time-domain mixing
-does not merely fail to exploit periodicity -- it obscures it.
+does not only fail to exploit periodicity -- it obscures it.
 """
 
 from __future__ import annotations

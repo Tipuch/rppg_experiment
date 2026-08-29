@@ -1,10 +1,10 @@
 """The learnable Gaussian cardiac band mask, CFMamba Eqs. 14-15.
 
 Two of these are ported from the deleted tests/test_head.py. Each guarded a bug in
-the previous model that raised nothing and returned plausible numbers: a frequency
+the previous model that raised nothing and returned credible numbers: a frequency
 band selected by rFFT bin index, so the same code meant 45-202 bpm at T=160 and
 24-108 bpm at T=300; and a spectral peak point-sampled out of existence while
-downsampling. This is the module where a bin index would be mistaken for a
+downsampling. This is the module where a bin index would be incorrect for a
 frequency again, so this is where they live now.
 """
 
@@ -57,7 +57,7 @@ def test_mask_is_symmetric_about_zero_frequency() -> None:
 def test_the_band_cannot_leave_the_physiological_range(theta: float) -> None:
     """Eq. 14's sigmoid is a hard constraint, and that is the point of it.
 
-    An unconstrained centre frequency would be free to settle on a motion artefact
+    An unconstrained centre frequency would be free to resolve on a motion artifact
     or a mains-lighting flicker, which is exactly what the prior exists to rule out.
     """
     mask = GaussianBandMask(fps=FPS)

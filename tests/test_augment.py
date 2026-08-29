@@ -1,7 +1,7 @@
 """HR-balanced temporal resampling, and the crop/flip geometry around it.
 
 The augmentation stretches the decode timebase and the PPG sampling timebase
-together. If those two ever disagree, every target in the batch is silently
+together. If those two ever disagree, every target in the batch is invisibly
 shifted against its frames and nothing raises -- the loss just stops falling. The
 first three tests pin the relationship.
 """
@@ -48,7 +48,7 @@ def _with_tone(dataset: WindowDataset, bpm: float) -> dict:
 
 @pytest.mark.parametrize("k", [0.7, 0.85, 1.0, 1.2, 1.4])
 def test_resampling_scales_the_apparent_heart_rate_by_one_over_k(k: float) -> None:
-    """A window read at TARGET_FPS*k and replayed at TARGET_FPS reads hr/k."""
+    """A window read at TARGET_FPS*k and repeated at TARGET_FPS reads hr/k."""
     dataset = _dataset()
     row = _with_tone(dataset, 96.0)
     wave = dataset._waveform(row, start=1.0, k=k)
@@ -156,11 +156,11 @@ def test_evaluation_never_flips() -> None:
 # --- segment starts are exact ------------------------------------------------
 #
 # Temporal jitter was removed. It moved an enumerated segment's start by up to
-# +/-0.5 s in training, on the argument that a segment boundary is an artefact of
+# +/-0.5 s in training, on the argument that a segment boundary is an artifact of
 # the enumeration rather than of the recording. It was also the only thing that
 # broke the strict non-overlap both source papers score under: at +/-0.5 s two
 # adjacent 5.33 s windows could share up to 1 s of footage, so a window's
-# neighbours leaked into it.
+# neighbours escaped into it.
 
 
 def _segment_dataset(train: bool) -> WindowDataset:
@@ -204,28 +204,28 @@ def test_a_clip_without_an_enumerated_start_still_moves_in_training() -> None:
 # --- the augmentation has to actually vary -----------------------------------
 #
 # It did not. The per-item RNG was seeded `self.seed * 1_000_003 + index`, and
-# nothing mutated `self.seed` between epochs, so every segment saw one fixed crop,
+# nothing altered `self.seed` between epochs, so every segment saw one fixed crop,
 # one fixed flip and one fixed k for an entire run -- a 50/50 partition assigned
-# once, not an augmentation. Measured before the fix: segment 0 drew crop (22, 19)
-# and flip False in epoch 0, 1, 2 and 3 alike.
+# once, not an augmentation. Measured before the fix: segment 0 took crop (22, 19)
+# and flip False in every one of epochs 0, 1, 2 and 3.
 #
-# The usual remedy -- reseed from `torch.initial_seed()`, which DataLoader varies
+# The usual fix -- reseed from `torch.initial_seed()`, which DataLoader varies
 # per epoch -- does not work here, because `persistent_workers=True` keeps workers
 # alive across epochs so their base seed never changes either. Instead each worker
 # draws from one continuous stream, which costs exact per-index reproducibility and
-# buys augmentation that moves.
+# gains augmentation that moves.
 
 
 def test_repeated_draws_for_one_index_do_not_repeat() -> None:
-    """The regression. Identical draws here mean the augmentation is frozen."""
+    """The regression. Identical draws here mean the augmentation is fixed."""
     dataset = _dataset(train=True)
     crops, flips = set(), set()
     for _ in range(40):
         rng = dataset._rng(0)
         crops.add(dataset._crop_window(256, rng)[:2])
         flips.add(rng.random() < 0.5)
-    assert len(crops) > 5, "the crop is frozen across draws"
-    assert flips == {True, False}, "the flip is frozen across draws"
+    assert len(crops) > 5, "the crop is fixed across draws"
+    assert flips == {True, False}, "the flip is fixed across draws"
 
 
 def test_evaluation_draws_stay_deterministic() -> None:
@@ -244,7 +244,7 @@ def test_two_indices_are_not_correlated() -> None:
 #
 # A missing contact PPG does not raise. `load_ppg` returns None, `_waveform`
 # returns zeros, every tensor keeps its shape, and training proceeds against a flat
-# target -- `neg_pearson` pins at exactly 1.0 and the frequency term collapses onto
+# target -- `neg_pearson` fixes at exactly 1.0 and the frequency term reduces onto
 # the single constant label that argmax of a zero PSD produces. That looks like
 # rapid progress in the log. It cost a 1.3-hour epoch once, after a manifest
 # repoint severed MCD's labels from its clips.
@@ -269,7 +269,7 @@ def test_a_dataset_with_a_real_waveform_passes() -> None:
 
 
 def test_the_check_names_the_counts_and_the_likely_cause() -> None:
-    """The message has to be actionable: a bare 'assertion failed' would not be."""
+    """The message has to be actionable: a plain 'assertion failed' would not be."""
     import pytest as _pytest
 
     from src.model.train import check_targets_are_supervised

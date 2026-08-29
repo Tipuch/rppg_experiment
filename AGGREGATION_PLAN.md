@@ -46,7 +46,7 @@ video's windows, and record how each label was obtained:
     hr_granularity  = window | clip | absent
     bp_granularity  = window | clip | absent
 
-Without those flags, overlapping windows carrying an identical broadcast label leak
+Without those flags, overlapping windows bringing an identical broadcast label leak
 across a train/test split and report accuracy that is not real.
 
 ### 3.2 "HRV, same units" is under-specified
@@ -56,28 +56,28 @@ Both need beat detection on PPG or ECG.
 
 SDNN over 10 s is unstable. Compute HRV **per clip**, not per window, and broadcast with
 `hrv_granularity = clip`. Note that SCAMPS clips are 20 s, so even clip-level HRV there is
-marginal — keep `is_synthetic` visible so you can drop it from HRV evaluation.
+slight — keep `is_synthetic` visible so you can drop it from HRV evaluation.
 
 ### 3.3 Polars should not hold pixels
 
 At 128x128x300x3 uint8 a single window is ~14.7 MB. A Polars column of those is unusable.
 
-Split it: **Polars holds the manifest and labels; frames live in `.npy` shards.** Each row
+Split it: **Polars keeps the manifest and labels; frames live in `.npy` shards.** Each row
 carries `frames_path` + `frames_offset` + `n_frames`. This keeps the table a few MB and
 scans fast, and the loader memory-maps shards.
 
 ## 4. Normalization rules
 
 **Images.** Face-detect once per clip, take the median box (not per-frame — jitter adds
-motion artefact that competes with the pulse signal), square-crop, resize to **128x128**.
+motion artifact that competes with the pulse signal), square-crop, resize to **128x128**.
 Standard for rPPG and survives the 4K downscale; the pulse signal is spatially
 low-frequency so the loss is small.
 
 **Frame rate.** Resample all to **30 fps**. CLBP-300 60→30 by dropping alternate frames.
-Nyquist becomes 15 Hz, still far above any plausible HR.
+Nyquist becomes 15 Hz, still far above any credible HR.
 
 **Modality.** MR-NIRP NIR is single-channel. Keep `modality = rgb | nir` and do not stack
-NIR into an RGB tensor silently.
+NIR into an RGB tensor invisibly.
 
 **Units.** HR bpm, SBP mmHg, DBP mmHg, BR breaths/min, HRV ms.
 
@@ -118,7 +118,7 @@ is_synthetic      bool
 compression       enum
 ```
 
-All six targets nullable. Sparsity is the expected state, not a defect.
+All six targets nullable. Sparsity is the expected state, not a fault.
 
 ## 6. Build order
 
@@ -133,7 +133,7 @@ All six targets nullable. Sparsity is the expected state, not a defect.
 5. **Splits** grouped by `subject_id`. Never split within a subject — windows from one
    video are near-duplicates.
 
-## 7. Honest coverage after the build
+## 7. Actual coverage after the build
 
 Rows with all six targets: **zero**, until MCD-rPPG or VitalVideos lands.
 Rows with images+HR: SCAMPS, UBFC, MR-NIRP, CLBP-300.
@@ -146,7 +146,7 @@ The pipeline is worth building now. The training set is not there yet.
 
 # Implementation status
 
-Superseded in scope. This document planned a **frame-store** pipeline writing
+Replaced in scope. This document planned a **frame-store** pipeline writing
 preprocessed windows to `.npy`. That approach was replaced by on-the-fly decoding
 once the arithmetic came out at ~3 TB for MCD at 256x256, so the extractors and
 `build_dataset.py` described below are no longer wired into the CLI.
@@ -169,11 +169,11 @@ be used for.
   Enforced by the validation gate.
 - **Predict-the-training-mean baselines** printed alongside every score. Three runs
   produced dev MAEs that looked reasonable until compared against a constant
-  predictor -- which they matched.
-- **Target statistics fitted on train only**, so dev/test label scale never leaks.
+  predictor -- which they equal to.
+- **Target statistics sized on train only**, so dev/test label scale never leaks.
 - **Explicit label granularity.** BP is one reading broadcast across a recording's
   windows; recording that as `clip` rather than `window` is what stops the gap being
-  misread.
+  misinterpret.
 - **Polars for the manifest, never for pixels.** One 128x128x300x3 window is
   ~14.7 MB.
 
@@ -196,8 +196,8 @@ be used for.
 **UBFC reference HR contains dropouts** to 1 bpm. Comparing against the raw mean
 gave 12.2 bpm MAE; filtering to 30-220 and taking the median gave 3.07.
 
-**opencv-python 5.0.0.93 corrupts the heap** decoding UBFC's rawvideo AVIs --
-`cv2.VideoCapture` opens the file, reports correct metadata, then dies inside the
+**opencv-python 5.0.0.93 damages the heap** decoding UBFC's rawvideo AVIs --
+`cv2.VideoCapture` opens the file, reports correct metadata, then fails inside the
 first `read()`. All decoding goes through ffmpeg (`src/aggregation/video.py`).
 
 **MCD AVIs carry no container duration.** `duration_ts` is 0 and `nb_frames` absent,
@@ -205,7 +205,7 @@ so both stream and format fields read zero. Recovered from the last keyframe
 timestamp in ~0.26 s, within 0.2 s of truth.
 
 **PSD bin width quantised the targets.** A 10 s window at 30 Hz resolves to 0.125 Hz
-bins = 7.5 bpm, so every HR landed on a multiple of 7.5. Fixed with zero-padding
+bins = 7.5 bpm, so every HR ended up on a multiple of 7.5. Fixed with zero-padding
 plus parabolic interpolation: MAE 3.07 -> 2.44 bpm.
 
 **Keyframe-only decoding is 10x faster** for the detection pass -- 0.30 s versus

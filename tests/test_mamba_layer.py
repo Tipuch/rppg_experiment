@@ -1,7 +1,7 @@
-"""Multi-temporal constraint Mamba, RhythmMamba Section 3.3.
+"""Multi-temporal constraint Mamba on a Mamba-3 core, RhythmMamba Section 3.3.
 
-GPU-only: mamba_ssm's selective scan has no CPU kernel. Everything else in the
-package is tested on CPU, which is why this seam exists.
+GPU-only: Mamba-3's scan is a Triton kernel with no CPU path. Everything else in
+the package is tested on CPU, which is why this seam exists.
 """
 
 from __future__ import annotations
@@ -9,10 +9,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.model.cfmamba.mamba_layer import DIRECTIONS, MultiTemporalMamba
+from src.model.cfmamba.mamba_layer import (
+    DEFAULT_CHUNK_SIZE,
+    DIRECTIONS,
+    MultiTemporalMamba,
+)
 
 cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="mamba_ssm's selective scan is CUDA-only"
+    not torch.cuda.is_available(), reason="Mamba-3's scan kernel is CUDA-only"
 )
 
 
@@ -43,9 +47,23 @@ def test_every_path_count_returns_the_full_sequence(paths: int) -> None:
 
 
 @cuda
-@pytest.mark.parametrize("n_frames", [40, 63, 100, 160])
+@pytest.mark.parametrize("n_frames", [40, 63, 100, 160, 300])
 def test_a_length_that_does_not_divide_evenly_still_works(n_frames: int) -> None:
     """T=63 splits into 4 as 16/16/16/15; the loop path must cover the remainder."""
+    layer = MultiTemporalMamba(dim=16).cuda()
+    out = layer(torch.randn(1, n_frames, 16, device="cuda"))
+    assert out.shape == (1, n_frames, 16)
+    assert torch.isfinite(out).all()
+
+
+@cuda
+@pytest.mark.parametrize("n_frames", [DEFAULT_CHUNK_SIZE + 1, DEFAULT_CHUNK_SIZE,
+                                      DEFAULT_CHUNK_SIZE - 1])
+def test_a_sequence_shorter_than_a_chunk_still_scans(n_frames: int) -> None:
+    """Mamba-3 splits the sequence into chunks and runs a recurrence between them,
+    so the chunk width is a boundary the Mamba-1 scan did not have. The quartered
+    path is what reaches it first: at T=300 it is 75 frames, and every path of a
+    short clip lands under one chunk."""
     layer = MultiTemporalMamba(dim=16).cuda()
     out = layer(torch.randn(1, n_frames, 16, device="cuda"))
     assert out.shape == (1, n_frames, 16)
@@ -72,7 +90,7 @@ def _last_frame_influence(direction: str) -> torch.Tensor:
 @cuda
 def test_a_unidirectional_scan_is_exactly_causal() -> None:
     """A forward scan cannot see the future -- not approximately, exactly. Every
-    position before the perturbed frame must be bit-identical. If it is not, the
+    position before the perturbed frame must be exactly equal. If it is not, the
     sequence axis has been transposed and the model is not scanning time at all."""
     influence = _last_frame_influence("none")
     assert float(influence[:-1].max()) == 0.0
@@ -90,8 +108,69 @@ def test_a_bidirectional_scan_lets_the_future_reach_the_past(direction: str) -> 
 
 
 def test_the_default_is_unidirectional() -> None:
-    """Stock mamba_ssm 2.3.2 has no bimamba flag; PhysMamba's came from a fork."""
-    assert MultiTemporalMamba(dim=8).direction == "none"
+    """Neither mamba_ssm.Mamba nor Mamba3 has a bimamba flag; PhysMamba's came
+    from a fork."""
+    assert MultiTemporalMamba(dim=16).direction == "none"
+
+
+# --- the core is Mamba-3 ------------------------------------------------------
+
+def test_there_is_no_short_convolution() -> None:
+    """Mamba-1 put a width-4 depthwise conv in front of the scan. Mamba-3 has
+    none: the trapezoid rule is itself an implicit width-2 convolution on the
+    state-input B_t x_t, and the B/C biases supply the data-independent part. The
+    paper measures adding the conv back as worse: 15.72 ppl against 15.85 for
+    "Mamba-3 + conv" (Table 5a).
+    """
+    layer = MultiTemporalMamba(dim=16)
+    assert not [name for name, _ in layer.named_modules() if "conv" in name]
+
+
+def test_b_and_c_are_normalised_and_biased_from_one() -> None:
+    """The two additions inside the projection: an RMS norm on B and C, and a
+    learnable bias added after it. All-ones init is the paper's choice; results are
+    insensitive to the value as long as it stays positive (Appendix F)."""
+    scan = MultiTemporalMamba(dim=16).mamba
+    assert scan.B_norm is not None and scan.C_norm is not None
+    assert torch.equal(scan.B_bias, torch.ones_like(scan.B_bias))
+    assert torch.equal(scan.C_bias, torch.ones_like(scan.C_bias))
+
+
+def test_the_whole_state_is_rotated() -> None:
+    """Proposition 2 puts a 2x2 rotation on every pair of state dimensions, so a
+    state of N carries N/2 angles. Rotating only half of it -- the reference
+    implementation's default -- would leave four angles at d_state=16, too coarse
+    a frequency basis to resolve a heart rate."""
+    scan = MultiTemporalMamba(dim=16, d_state=16).mamba
+    assert scan.num_rope_angles == 16 // 2
+
+
+def test_the_state_transition_carries_a_phase_not_only_a_decay() -> None:
+    """The point of the rotation, given as a measurement: perturb one frame and
+    the response down the sequence must change sign rather than only shrink. A
+    real decay -- Mamba-1's transition -- can only attenuate, so every downstream
+    response would keep one sign."""
+    torch.manual_seed(0)
+    layer = MultiTemporalMamba(dim=16, paths=1).cuda().eval()
+    x = torch.randn(1, 128, 16, device="cuda")
+    y = x.clone()
+    y[0, 0] += 5.0
+    with torch.no_grad():
+        response = (layer(y) - layer(x))[0, :, 0]
+    assert response.max() > 0 and response.min() < 0
+
+
+def test_the_mamba_3_core_is_cheaper_than_the_mamba_1_layer_it_replaced() -> None:
+    """No short conv, no separate x_proj, and a per-head scalar A in place of
+    Mamba-1's (d_inner, d_state) matrix. That is what covers for the rotation
+    angles, the trapezoid gate and the B/C norms, and then some."""
+    from mamba_ssm import Mamba
+
+    mamba1 = Mamba(d_model=80, d_state=16, d_conv=4, expand=2)
+    mamba3 = MultiTemporalMamba(dim=80).mamba
+    assert sum(p.numel() for p in mamba3.parameters()) < sum(
+        p.numel() for p in mamba1.parameters()
+    )
 
 
 def test_shared_bidirectional_costs_no_parameters() -> None:
@@ -119,7 +198,7 @@ def test_every_direction_preserves_shape(direction: str) -> None:
 @cuda
 def test_slicing_actually_changes_the_result() -> None:
     """Three paths must not collapse to three copies of the same computation, or
-    the multi-temporal constraint is decoration."""
+    the multi-temporal constraint has no effect."""
     torch.manual_seed(0)
     one = MultiTemporalMamba(dim=16, paths=1).cuda().eval()
     three = MultiTemporalMamba(dim=16, paths=3).cuda().eval()

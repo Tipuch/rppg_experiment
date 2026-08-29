@@ -23,10 +23,10 @@ def test_shape_and_realness_survive_the_round_trip() -> None:
 
 
 def test_an_identity_weight_reproduces_the_input() -> None:
-    """FFT then iFFT with a unit complex weight must be the identity, which pins
+    """FFT then iFFT with a unit complex weight must be the identity, which fixes
     that the forward and inverse transforms are along the same axis.
 
-    Run with the activation off: with it on, the round trip is deliberately not the
+    Run with the activation off: with it on, the round trip is intentionally not the
     identity, and this test is about the transform axes rather than FreMLP.
     """
     ffn = ChannelSpectralFFN(hidden=8, activation=None)
@@ -57,7 +57,7 @@ def test_the_activation_makes_the_stage_non_linear() -> None:
 
 def test_it_mixes_channels_and_not_timestamps() -> None:
     """The weights are shared across time (after Eq. 11), so permuting frames must
-    permute the output identically. Mixing along time instead would break this and
+    permute the output the same. Mixing along time instead would break this and
     nothing else would notice."""
     torch.manual_seed(0)
     ffn = ChannelSpectralFFN(hidden=8, activation=None)

@@ -11,8 +11,8 @@ Two details the equations depend on and neither paper spells out:
 
 **Frequencies are Hz, never bin indices.** FFT bin k means k*fps/T, so a mask
 built from bin numbers means a different filter at every clip length -- and
-nothing raises, because the tensor keeps its shape. This is the same bug that
-shipped silently in the model this one replaces, where a fixed bin list meant
+nothing raises, because the tensor keeps its shape. This is the same fault that
+went unreported in the model this one replaces, where a fixed bin list meant
 45-202 bpm at T=160 and 24-108 bpm at T=300.
 
 **Eq. 15 is two Gaussians, not one.** A real signal's spectrum is conjugate
@@ -28,7 +28,7 @@ import torch
 from torch import nn
 
 # CFMamba Eq. 14. 0.75-2.5 Hz is 45-150 bpm, the range both papers cite as
-# physiologically plausible; the bandwidth range keeps the filter from collapsing
+# physiologically credible; the bandwidth range keeps the filter from collapsing
 # onto a single bin or opening up into an all-pass.
 FC_MIN_HZ, FC_MAX_HZ = 0.75, 2.5
 BW_MIN_HZ, BW_MAX_HZ = 0.2, 1.0
@@ -40,7 +40,7 @@ class GaussianBandMask(nn.Module):
     Both parameters are unconstrained scalars squashed into a physiological range,
     so no setting of the weights can produce a filter centred outside 0.75-2.5 Hz.
     The constraint is the point: it is what makes this a prior rather than one more
-    free parameter that can be trained onto a motion artefact.
+    free parameter that can be trained onto a motion artifact.
     """
 
     def __init__(self, fps: float = 30.0) -> None:

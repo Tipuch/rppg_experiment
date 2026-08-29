@@ -4,7 +4,7 @@ RhythmMamba flattens each frame's spatial map into channels, which is what lets
 Mamba treat the clip as a pure time series -- but a plain average over space
 weights the background exactly as heavily as the cheeks. Its own answer was a
 learned sigmoid gate. CFMamba's objection is that a purely data-driven gate has
-nothing anchoring it to anatomy, so under motion or a lighting change it drifts
+nothing anchoring it to anatomy, so under motion or a lighting change it strays
 onto whatever is most visually salient: hair, an edge, the wall (Fig. 3a).
 
 PGA multiplies two maps before pooling:
@@ -36,7 +36,7 @@ class PhysiologyGuidedAttention(nn.Module):
         min_sigma: float = 1.0,
     ) -> None:
         super().__init__()
-        # gamma and eps are unstated in the paper. Both are almost inert: Eq. 4
+        # gamma and eps are unstated in the paper. Both are almost dead: Eq. 4
         # renormalises A_tilde by its own L1 norm, so any positive gamma cancels
         # exactly, and eps only has to keep the divide finite on a dead channel.
         self.gamma = gamma
@@ -92,7 +92,7 @@ class PhysiologyGuidedAttention(nn.Module):
         prior = self.gaussian_prior(skin, height, width).to(x.dtype)   # (B, 1, H, W)
 
         # Eq. 2: divisive normalisation per channel per frame, not a sigmoid. A
-        # sigmoid saturates and loses the ratio between two bright regions; this
+        # sigmoid saturates and forfeits the ratio between two bright regions; this
         # keeps it, so a channel can express "twice as much here as there".
         spatial_mean = x.mean(dim=(3, 4), keepdim=True)
         feat = x / (self.eps + spatial_mean) * self.gamma
@@ -109,5 +109,5 @@ class PhysiologyGuidedAttention(nn.Module):
 
         # Eq. 5: spatial pooling is what turns the video into a time series. From
         # here on the state transitions run purely along time, which is the whole
-        # premise the Mamba backbone rests on.
+        # basis the Mamba backbone depends on.
         return (x * attention).mean(dim=(3, 4)).view(batch, n_frames, channels)

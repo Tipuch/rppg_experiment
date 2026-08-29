@@ -5,12 +5,15 @@ Rebuilt from Wang et al., *Biomedical Signal Processing and Control* 126 (2026)
 RhythmFormer (arXiv:2402.12788), FreTS (NeurIPS 36) and CMamba (arXiv:2406.05316)
 pinning values that both leave open. All five papers are in `research/`.
 
-**0.9559M parameters, 79.19M MACs per frame.** Published: 0.91M and 80.82M --
-so +5.0% and -2.0%. The parameter overshoot is one deliberate choice, CAM's
-expansion rate; see §4.2. Those
-two numbers are the only quantitative constraints on the parts the paper does not
-specify, so they are enforced as a test — `tests/test_budget.py` — and it runs
-before training rather than after.
+**0.9327M parameters, 79.15M MACs per frame.** Published: 0.91M and 80.82M -- so
++2.5% and -2.0%. Those two numbers are the only quantitative constraints on the
+parts the paper does not specify, so they are enforced as a test —
+`tests/test_budget.py` — and it runs before training rather than after. The MAC
+figure does not include the scan, which is a fused kernel and opaque to
+`FlopCounterMode`.
+
+The scan itself is Mamba-3 rather than the Mamba-1 selective scan all three source
+papers call; see §4.1.
 
 Input `(B, T, 3, 128, 128)` in `[0, 1]` plus a skin mask `(B, 128, 128)`.
 Output `(B, T)`: one BVP sample per input frame. Heart rate is **not** predicted; it
@@ -37,7 +40,7 @@ is read off the waveform afterwards by band-pass and periodogram.
 
 ## 1. Why space is collapsed before the scan
 
-This is the premise everything else rests on, and it is the sharpest difference
+This is the basis everything else depends on, and it is the sharpest difference
 from PhysMamba, the other Mamba-based rPPG model. PhysMamba flattens **space and
 time together** into one token sequence (`n_tokens = nf * H * W` in
 `tools/rPPG-Toolbox/neural_methods/model/PhysMamba.py`). RhythmMamba measured what
@@ -66,7 +69,7 @@ it sees a pure time series.
 A face is ~127 LSB of static appearance and the pulse is a 0.1-0.5 LSB change on
 top of it, so raw frames ask the network to find a 0.3% modulation under a signal
 400x larger. Frame differences cancel the static term but amplify every other
-artefact. The stem uses both.
+artifact. The stem uses both.
 
 ```
 temporal shift        X[t-2..t+2], clamped at the clip boundary
@@ -91,7 +94,7 @@ ratio 5:5 (its Table 8 — 3.07 MAE against 4.56 for raw alone and 4.39 for
 differences alone), ±2 adjacent frames (Table 6 — 3.07 against 4.19 at ±1), frame
 step 1 (Table 7).
 
-**The two source papers disagree on the geometry** and CFMamba cites only
+**The two source papers disagree on the geometry** and CFMamba references only
 RhythmMamba, so both are implemented and the cost budget arbitrates:
 
 | | RhythmMamba §3.2 | RhythmFormer §3.2 |
@@ -102,14 +105,14 @@ RhythmMamba, so both are implemented and the cost budget arbitrates:
 | MaxPool in stem2 | yes | no |
 | output | H/8 = 16x16 | H/4 = 32x32 |
 
-`stem2` at 5x5 is neither paper's stated value. RhythmMamba's prose only constrains
+`stem2` at 5x5 is neither paper's given value. RhythmMamba's text only constrains
 that convolution to stride 1 — the 16x16 arithmetic fails otherwise — so its kernel
 was never pinned, and 5 is what reproduces the published cost: 82.5M MACs/frame
 against 94.5M at 7 and 74.1M at 3.
 
-The diff *ordering* is inert: reverse is chronological negated, and the first
+The diff *ordering* is dead: reverse is chronological negated, and the first
 convolution is linear, so it cannot change what the stem can represent. Kept
-faithful anyway.
+accurate anyway.
 
 ---
 
@@ -117,9 +120,9 @@ faithful anyway.
 
 `src/model/cfmamba/pga.py`. **Zero parameters.**
 
-Once space is pooled away you have discarded *where* the signal was. RhythmMamba's
+Once space is pooled away you have thrown away *where* the signal was. RhythmMamba's
 answer was a learned sigmoid gate; CFMamba's objection is that a purely data-driven
-gate has nothing anchoring it to anatomy, so under motion it drifts onto hair,
+gate has nothing anchoring it to anatomy, so under motion it strays onto hair,
 edges and background (its Fig. 3a). PGA multiplies two maps before pooling.
 
 ```
@@ -136,10 +139,10 @@ parameter-free so it cannot be trained away. An empty mask degrades to a centred
 bias rather than a NaN.
 
 Eq. 2 is a divisive normalisation, not a sigmoid — that is the substantive
-difference from RhythmMamba. A sigmoid saturates and loses the ratio between two
+difference from RhythmMamba. A sigmoid saturates and forfeits the ratio between two
 bright regions; this keeps it, so a channel can express "twice as much here".
 
-Eq. 4's constant is confirmed against the source it cites: EfficientPhys and TS-CAN
+Eq. 4's constant is confirmed against the source it references: EfficientPhys and TS-CAN
 both implement `x / sum(x) * H * W * 0.5`
 (`tools/rPPG-Toolbox/neural_methods/model/EfficientPhys.py`).
 
@@ -158,7 +161,7 @@ x     = norm2(x + ffn(x))
 ```
 
 CAM modulates the **Mamba branch before it joins the residual stream**, not after
-the addition. Section 3.2 says it "operates on the temporal representations
+the addition. Section 3.2 states it "operates on the temporal representations
 produced by the state space model"; applying it after would let it rescale the skip
 connection too, compounding the attenuation across 4 layers.
 
@@ -170,21 +173,51 @@ One Mamba block sees the clip whole, in halves, and in quarters — three paths,
 `2^(i-1)` slices each, **one shared set of weights**. RhythmMamba is explicit that
 this is a *constraint*, not a fusion: "we replace multi-temporal fusion with
 multi-temporal constraint". Allocating a Mamba per path would turn it into a
-multi-scale ensemble and change what the layer means, so the sharing is asserted in
+multi-scale ensemble and change what the layer means, so the sharing is checked in
 the tests.
 
 ```
 X_mamba = sum_i X_path_i * silu(Proj(X_stem))          Eq. 4
 ```
 
-`d_state=16, d_conv=4, expand=2` — Mamba's defaults, corroborated by PhysMamba's
-vendored source, which uses exactly these.
+**The scan inside is Mamba-3** (Lahoti et al., arXiv:2603.15569), not the Mamba-1
+selective scan all three source papers call. The block around it is unchanged —
+same `(B, T, C)` in and out, same CAM, same DF-FFN, same residuals. Four changes
+to the recurrence:
 
-**Direction.** Unidirectional by default. Neither paper says, and the evidence
-splits: RhythmMamba's phase-shift argument reads as directional and stock
-`mamba_ssm` 2.3.2 has no `bimamba` flag (PhysMamba's came from a fork), but a pulse
+| | Mamba-1 | Mamba-3 |
+|---|---|---|
+| discretisation | exponential-Euler, `h_t = α_t h_{t-1} + Δ_t B_t x_t` | exponential-trapezoidal, `h_t = α_t h_{t-1} + β_t B_{t-1} x_{t-1} + γ_t B_t x_t` |
+| state transition | real decay | decay × data-dependent rotation, applied to B and C as a RoPE |
+| B, C | unnormalised | RMS-normalised, then a learnable bias initialised to 1 |
+| short conv | width-4 depthwise | **none** |
+
+`β_t = (1-λ_t) Δ_t exp(Δ_t A_t)`, `γ_t = λ_t Δ_t`, `λ_t = σ(u_t)` projected from
+the input (Prop. 1). The trapezoid is second-order where Euler is first, which
+matters at 1–3 Hz sampled at 30 Hz: ten to thirty samples per cycle, so the
+discretisation error is *phase* error. The rotation is RhythmMamba's own
+justification for using Mamba — "a state transition is the temporal phase shift of
+the rPPG signal" — taken literally.
+
+The conv is gone because the trapezoid *is* an implicit width-2 convolution on
+`B_t x_t` (§3.1.2). Table 5a measures adding it back as worse: 15.72 ppl against
+15.85 for "Mamba-3 + conv".
+
+`d_state=16, expand=2, headdim=32, rope_fraction=1.0, chunk_size=32`. `d_state`
+carries over from the Mamba-1 fit rather than rising to Mamba-3's default of 128,
+which is sized for a 1.5B language model. `rope_fraction=1.0` rotates the whole
+state for `d_state/2 = 8` angles (Prop. 2); 0.5 would leave four, too coarse for a
+heart rate. `chunk_size=32` because the quartered path is `T/4` — 75 frames at the
+300 this trains on — and 64 leaves it no cross-chunk recurrence.
+
+Measured, this is *cheaper* than what it replaced: 0.9559M → **0.9327M**, and the
+error against the published 0.91M with it, +5.0% → **+2.5%**.
+
+**Direction.** Unidirectional by default. Neither paper states, and the evidence
+splits: RhythmMamba's phase-shift argument reads as directional and neither
+`mamba_ssm.Mamba` nor `Mamba3` has a `bimamba` flag (PhysMamba's came from a fork), but a pulse
 is not causal in any physical sense and an offline model has the whole clip. The
-`direction` argument settles it by measurement: `"shared"` scans the reversed
+`direction` argument resolves it by measurement: `"shared"` scans the reversed
 sequence with the same weights and adds no parameters; `"separate"` is Vim-style and
 roughly doubles the SSM parameter count.
 
@@ -196,7 +229,7 @@ Measured: unidirectional influence of the last frame on every earlier position i
 `src/model/cfmamba/cam.py`. CFMamba Eqs. 6-8.
 
 Mamba runs each channel through its own recurrence and mixes only by linear
-projection, so it cannot down-weight a channel carrying a motion artefact. CAM
+projection, so it cannot down-weight a channel bringing a motion artifact. CAM
 estimates channel reliability from the whole clip.
 
 ```
@@ -212,22 +245,22 @@ inferable from CFMamba alone:
   CMamba calls it "expansion rate r" and reports that too small a value underfits.
   Sizing it as a bottleneck costs ~28k parameters per block at dim=96.
 
-  **The value is not recoverable from either paper.** CFMamba says only "two
+  **The value is not recoverable from either paper.** CFMamba states only "two
   lightweight multilayer perceptrons". CMamba uses "expansion rate" for two
   different modules and prints a number for the wrong one: its A.2 fixes "the
   expansion rate of the linear layer at 1" for **M-Mamba** (that is Mamba's
-  `expand`, not the MLP), while the GDD-MLP's `r` appears only in a swept figure
+  `expand`, not the MLP), while the GDD-MLP's `r` appears only in a figure, never as a number
   whose axis labels are rasterised. `r = 1.0` is used here on the word rather than
-  a number: it is the smallest setting that is genuinely an *expansion*, making the
+  a number: it is the smallest setting that is really an *expansion*, making the
   hidden layer as wide as the stream.
 
   It costs +5.0% on the published parameter count, and that is the whole of the
   overshoot. Re-fitting the other widths around it is worse, not better -- with `r`
   pinned the best available is `dim=76 / ffn=152 / stem=16` at -4.42% parameters and
   -3.2% MACs, 7.6% total against 7.0% for keeping `dim=80`. So the widths stay where
-  every sweep put them.
+  every configuration search put them.
 
-  Note CMamba's M-Mamba `expand=1` does **not** transfer: CFMamba cites [14,15] for
+  Note CMamba's M-Mamba `expand=1` does **not** transfer: CFMamba references [14,15] for
   its SSM and CMamba only for the channel-descriptor idea, so `expand=2` (Mamba's
   default, corroborated by PhysMamba's vendored source) is correct here.
 - **CMamba runs each descriptor through the shared MLP and sums the outputs;**
@@ -255,12 +288,12 @@ Every operation the section names is linear: linear expansion, FFT, complex line
 iFFT, Gaussian gating, iFFT, linear projection. The only sigmoid in it constrains
 `f_c` and `b_w`, which are parameters, not activations. Implemented exactly as
 written, the whole DF-FFN is therefore **one linear operator** -- measured by
-superposition, relative affine error `2.2e-07`, against `6.4e-01` for an ordinary
+superposition, relative affine error `2.2e-07`, against `6.4e-01` for an normal
 two-layer MLP. Four stacked linear blocks add nothing the Mamba layers do not
 already do, which cannot be what an ablation worth 0.36 against 0.59 MAE is
 describing.
 
-FreTS, the work CFMamba cites for the complex linear, does have one: its Eq. 7
+FreTS, the work CFMamba references for the complex linear, does have one: its Eq. 7
 applies the activation to the real and imaginary parts **separately** and restacks
 them. That is where it goes here, inside both complex linears -- so `ComplexLinear`
 stays exactly Eqs. 10-11 and `complex_activation` is the other half of what FreTS
@@ -280,7 +313,7 @@ M(f) = exp(-(f-f_c)^2 / 2 b_w^2) + exp(-(f+f_c)^2 / 2 b_w^2)   Eq. 15
 
 The sigmoid is a hard constraint and that is the point: no setting of the weights
 can centre the filter outside 45-150 bpm, so it stays a physiological prior rather
-than one more parameter that can settle on a motion artefact.
+than one more parameter that can resolve on a motion artifact.
 
 **Eq. 15 is two Gaussians because a real signal's spectrum is conjugate symmetric**
 — the peak appears at +f_c and -f_c. A single lobe would keep one, halve the energy
@@ -288,25 +321,25 @@ and leave the inverse transform complex. Hence full `fft`, not `rfft`.
 
 **Frequencies are Hz, never bin indices.** Bin *k* means `k*fps/T`, so a mask built
 from bin numbers means a different filter at every clip length, keeps its shape, and
-raises nothing. That exact bug shipped silently in the model this replaces, where a
+raises nothing. That exact fault went unreported in the model this replaces, where a
 fixed bin list meant 45-202 bpm at T=160 and 24-108 bpm at T=300.
-`tests/test_band_mask.py` holds the peak to the same Hz across T = 100/160/300/450.
+`tests/test_band_mask.py` keeps the peak to the same Hz across T = 100/160/300/450.
 
-#### Eq. 17, the one place the paper contradicts itself
+#### Eq. 17, the one place the paper conflicts with itself
 
-Its prose — "applied to each channel individually, with weights shared across all N
+Its text — "applied to each channel individually, with weights shared across all N
 channels" — reads as a `(T, T)` matrix over the frequency axis. But the same
 sentence points at Eqs. 10-11 for the operation, and those define `W in C^(NxN)`.
 Two outside facts break the tie:
 
-- **FreTS**, which CFMamba cites for the method, transforms along one axis while
+- **FreTS**, which CFMamba references for the method, transforms along one axis while
   applying `W in C^(dxd)` to a *different* one (its Eq. 4). The transformed axis
-  rides along as a batch dimension. CFMamba folded FreTS's three axes into two,
-  which is how the prose came to read ambiguously.
+  acts as a batch dimension. CFMamba folded FreTS's three axes into two,
+  which is how the text came to read ambiguously.
 - **CFMamba Table 4 measured cost on a 900-frame clip** while §4.1 trained on
   160-frame segments. A `(T, T)` weight cannot do both.
 
-So `pts_mode="channel"`. `"full"` is implemented as the literal-prose alternative
+So `pts_mode="channel"`. `"full"` is implemented as the literal-text alternative
 and shown in `tests/test_budget.py` to be inconsistent with the paper's own
 experiment.
 
@@ -336,7 +369,7 @@ correlation is indifferent to *which* periodicity was locked onto: a prediction 
 double the true rate can correlate respectably while being wrong by 72 bpm.
 
 **The weights are RhythmFormer's**, because CFMamba leaves them unstated and
-RhythmFormer's Table 13 shows the balance is not incidental:
+RhythmFormer's Table 13 shows the balance is not minor:
 
 | terms | MAE | RMSE |
 |---|---|---|
@@ -344,10 +377,10 @@ RhythmFormer's Table 13 shows the balance is not incidental:
 | **freq only** | **13.32** | 16.54 |
 | both | 3.13 | 6.98 |
 
-The temporal term carries the model. The frequency term alone collapses it.
+The temporal term carries the model. The frequency term alone reduces it.
 
 The frequency term is written here rather than imported from the toolbox because
-`TorchLossComputer.Frequency_loss` derives its label through
+`TorchLossComputer.Frequency_loss` obtains its label through
 `calculate_metric_per_video`, which hardcodes a first-order 0.6-3.3 Hz band-pass.
 Importing it would put a 36-198 bpm band inside the *loss*.
 
@@ -377,7 +410,7 @@ serve one crop. Two things were wrong with it.
 
 **94% of clips have a face box smaller than 256**, so the first step was an
 *enlargement* -- median box side is 210 px for UBFC and 191 px for MCD. And
-`cv2.INTER_AREA` enlarging is **bit-identical to `INTER_NEAREST`**: measured, a 4x4
+`cv2.INTER_AREA` enlarging is **exactly equal to `INTER_NEAREST`**: measured, a 4x4
 ramp taken to 8x8 comes back with 16 distinct values against `INTER_LINEAR`'s 44.
 So 94% of clips were pixel-duplicated up to 256 and then area-averaged back down to
 128, for nothing.
@@ -396,7 +429,7 @@ Three rules now hold, in order of how much they matter for a 0.1-0.5 LSB signal:
 2. **Area filter when shrinking.** It integrates every source pixel landing in an
    output pixel, so the local mean -- which is the entire signal -- is preserved
    exactly. Verified: a uniform +0.3 step survives a 235->128 reduction as exactly
-   +0.3 everywhere. Linear point-samples and drifts.
+   +0.3 everywhere. Linear point-samples and aliases.
 3. **Linear when enlarging.** 12.7% of MCD clips have an 87.5% crop below 128 px
    (smallest is 94), and for those area filtering would be nearest-neighbour.
 
@@ -414,18 +447,18 @@ Augmentation, all train-only:
   `hr_true / k`, so the decode timebase and the PPG sampling timebase must move
   together — that alignment is what `tests/test_augment.py` exists for.
 - **Segment jitter — removed.** Enumerated starts used to move by up to ±0.5 s in
-  training, on the argument that a segment boundary is an artefact of the
+  training, on the argument that a segment boundary is an artifact of the
   enumeration. It was the only thing breaking the strict non-overlap both source
   papers score under: at ±0.5 s two adjacent 5.33 s windows could share a second of
-  footage, so each window leaked into its neighbours. Starts are now exact.
+  footage, so each window escaped into its neighbours. Starts are now exact.
 
-**The augmentation used to be frozen.** The per-item RNG was seeded
-`seed * 1_000_003 + index`, and nothing mutated `seed` between epochs, so every
+**The augmentation used to be fixed.** The per-item RNG was seeded
+`seed * 1_000_003 + index`, and nothing altered `seed` between epochs, so every
 segment saw one fixed crop, one fixed flip and one fixed `k` for a whole run — a
-50/50 partition assigned once rather than an augmentation. Measured: segment 0 drew
-crop (22, 19) and flip `False` in epoch 0, 1, 2 and 3 alike. Training now draws from
+50/50 partition assigned once rather than an augmentation. Measured: segment 0 took
+crop (22, 19) and flip `False` in every one of epochs 0, 1, 2 and 3. Training now draws from
 one continuous per-worker stream. Reseeding from `torch.initial_seed()`, the usual
-remedy, does not work here: `persistent_workers=True` keeps workers alive across
+fix, does not work here: `persistent_workers=True` keeps workers alive across
 epochs so their base seed never changes either. Evaluation keeps the per-index seed,
 because a scored window has to be the same window every time.
 
@@ -461,7 +494,7 @@ floor moves by 2x depending on which subjects land in the split, which is why
 metrics are reported per subject and per source rather than as one number.
 
 **Ground-truth heart rate comes from the contact PPG, never the label column.**
-`DATASETS.md` records subject24 labelled 96 bpm against a PPG reading of 127.2, plus
+`DATASETS.md` records subject24 named 96 bpm against a PPG reading of 127.2, plus
 four more UBFC subjects whose HR readout drops out while the waveform stays intact.
 
 ---
@@ -474,13 +507,13 @@ training, the remaining 12 (subject38-49) for test. DATASET_1's six recordings j
 disk gets used — they include the corpus's only post-exercise recording at 108 bpm.
 
 Clips are **not** filtered by audit prominence. The paper uses all 42 subjects, and
-`DATASETS.md` warns that selecting clips where a simple spectral estimator already
+`DATASETS.md` cautions that selecting clips where a simple spectral estimator already
 agrees with the label makes any later result circular.
 
 **No validation split and no checkpoint selection.** Neither paper has one; both
 report the last epoch. The epoch budget therefore has to be chosen in advance.
 
-Evaluation enumerates all non-overlapping 160-frame segments: 434 train, 144 test.
+Evaluation lists all non-overlapping 160-frame segments: 434 train, 144 test.
 Without that, a pass sees one centred window per clip and the reported MAE is a mean
 over twelve numbers.
 
@@ -498,22 +531,22 @@ The published 0.91M parameters and 80.82M MACs/frame are two equations in severa
 unknowns. They cannot recover the architecture; they can and do rule configurations
 out.
 
-**Reading the cited sources moved the fit, and improved it.** Before FreTS and
+**Reading the referenced sources moved the fit, and improved it.** Before FreTS and
 CMamba were read, PTS-FFN was a `(T, T)` frequency matrix and CAM was an SE-net
 bottleneck. Both were wrong in the direction of too few parameters, and correcting
 them took the fit from -2.9%/+2.1% to **-0.6%/-2.0%**. A reconstruction getting
 *closer* to two independent published numbers as its module shapes are corrected
-against the sources is the strongest evidence available that the shapes are right.
+against the sources is the available evidence that the shapes are right.
 
-**What survived every sweep** — before and after those corrections — is depth 4 and
-a stem width of 16. Those are worth believing. `dim=80` with a 2x FFN latent is a
+**What remained across every configuration search** — before and after those corrections — is depth 4 and
+a stem width of 16. `dim=80` with a 2x FFN latent is a
 fit among several that land inside tolerance, not a recovery.
 
 **Where the budget cannot help at all.** CAM is the only module that is
 parameter-heavy and compute-free, because Eq. 6 pools over T *before* the MLPs, so
 they run once per clip on a `(B, C)` vector rather than per frame. Measured, MACs
 per frame are identical to the second decimal from `r = 0.25` to `r = 4.0` while
-parameters move 0.879M -> 1.265M. The FLOP budget is silent on that knob and the
+parameters move 0.879M -> 1.265M. The FLOP budget is silent on that control and the
 parameter budget is the only evidence -- which is why it is the one place a textual
 argument was allowed to overrule it.
 
@@ -522,8 +555,8 @@ learning rate, which no paper in the lineage states; CAM's exact expansion rate,
 which CMamba sweeps in a figure without printing the chosen value; and which
 activation the DF-FFN's omitted non-linearity should be (§4.3).
 
-**One place the paper contradicts itself.** Section 3.1 says the facial region is
-detected "for every frames"; Section 4.1 says "facial recognition was executed
+**One place the paper conflicts with itself.** Section 3.1 states the facial region is
+detected "for every frames"; Section 4.1 states "facial recognition was executed
 solely on the first frame of each segment". This pipeline does neither -- a median
 box over 24 sampled frames, measured as no worse than a 1.5x first-frame crop (see
 the face box table above) and robust to a bad first frame in a way that neither of
@@ -535,7 +568,7 @@ the paper's own descriptions is.
 
 **The corpus, not the architecture, is the binding constraint.** UBFC-rPPG is 42
 subjects and ~55 minutes of video. The paper reports 0.36 bpm MAE; this copy of
-UBFC differs — three subjects run at 23.2 fps, five have a broken HR readout, and
+UBFC departs — three subjects run at 23.2 fps, five have a broken HR readout, and
 the decode and crop path is this project's rather than the toolbox's.
 
 **The skin mask is one median mask per clip**, so it does not track subject motion.

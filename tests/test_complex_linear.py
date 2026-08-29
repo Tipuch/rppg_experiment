@@ -52,7 +52,7 @@ def test_multiplying_by_i_rotates_the_output() -> None:
 
 
 def test_initialisation_preserves_signal_scale() -> None:
-    """Var(out) = in * std^2 * (Var(re) + Var(im)); std = 1/sqrt(2*in) holds it."""
+    """Var(out) = in * std^2 * (Var(re) + Var(im)); std = 1/sqrt(2*in) keeps it."""
     torch.manual_seed(0)
     layer = ComplexLinear(256, 256, bias=False)
     x = torch.complex(torch.randn(64, 256), torch.randn(64, 256))

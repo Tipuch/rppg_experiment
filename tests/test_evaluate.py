@@ -1,8 +1,8 @@
 """Aggregation of per-window results into the five reported metrics.
 
 The test that matters most here is the constant-predictor one. Every previous
-attempt on this project converged to predicting a constant, and every aggregate
-metric except rho reports that as a mediocre-but-plausible result.
+attempt on this project stabilised to predicting a constant, and every aggregate
+metric except rho reports that as a mediocre-but-credible result.
 """
 
 from __future__ import annotations
@@ -30,11 +30,11 @@ def test_a_perfect_prediction_scores_zero_error_and_unit_correlation() -> None:
 
 def test_a_constant_predictor_is_exposed_by_rho_and_nothing_else() -> None:
     """The failure mode this project has hit three times. MAE looks like a result;
-    rho is what says the prediction carries no information."""
+    rho is what states the prediction carries no information."""
     truths = [60.0, 72.0, 84.0, 96.0, 108.0]
     mean = sum(truths) / len(truths)
     m = summarise([_row(mean, t) for t in truths])
-    assert m["mae"] < 20.0                       # plausible-looking
+    assert m["mae"] < 20.0                       # credible-looking
     assert math.isnan(m["rho"])                  # and undefined, not "zero"
     assert m["hr_pred_std"] == pytest.approx(0.0)
     assert m["hr_true_std"] > 10.0
@@ -59,7 +59,7 @@ def test_mape_is_a_percentage_of_the_true_rate() -> None:
 
 
 def test_unusable_windows_are_dropped_and_counted() -> None:
-    """Silently dropping them would let a model that fails on the hard half of the
+    """Invisibly dropping them would let a model that fails on the hard half of the
     data report the easy half's score."""
     rows = [_row(72.0, 72.0), _row(float("nan"), 80.0), _row(90.0, float("nan"))]
     m = summarise(rows)
@@ -97,7 +97,7 @@ def test_format_is_readable_and_complete() -> None:
         assert field in line
 
 
-# --- the loss terms, scored on the held-out side ----------------------------
+# --- the loss terms, scored on the unseen side ----------------------------
 #
 # Heart-rate MAE on a handful of subjects is quantised by the periodogram bin
 # spacing and swings several bpm between epochs on sampling noise. Measured on a
@@ -133,7 +133,7 @@ def test_a_split_with_no_readable_window_still_reports_its_loss() -> None:
 
 
 def test_a_run_without_loss_terms_omits_them_rather_than_reporting_zero() -> None:
-    """Runs written before the terms were recorded must not read as loss 0.0."""
+    """Runs written before the terms were logged must not read as loss 0.0."""
     m = summarise([_row(60.0, 60.0), _row(72.0, 72.0)])
     assert "loss" not in m
     assert "time" not in m

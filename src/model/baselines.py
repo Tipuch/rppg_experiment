@@ -29,11 +29,11 @@ _TOOLBOX = Path(__file__).resolve().parents[2] / "tools" / "rPPG-Toolbox"
 def _load(module_name: str, relative: str):
     """Load one vendored estimator by file path, with a minimal `utils` shim.
 
-    Neither estimator can be loaded from a bare path the way post_process can,
+    Neither estimator can be loaded from a plain path the way post_process can,
     because both do `import unsupervised_methods.utils`. That module's top-level
     imports pull in scikit-image and scikit-learn, and **neither is used on this
     code path** -- POS calls only `utils.detrend`, CHROM calls nothing. Rather than
-    take on two large dependencies to satisfy dead imports, a stand-in package
+    take on two large dependencies to satisfy dead imports, a substitute package
     exposing `detrend` and `process_video` is registered first.
 
     `detrend` is not a reimplementation: it is the same routine, already loaded
@@ -57,7 +57,7 @@ def _load(module_name: str, relative: str):
         utils.detrend = detrend
 
         def process_video(frames: np.ndarray) -> np.ndarray:
-            """Per-frame spatial mean RGB, shaped (1, 3, T). Verbatim behaviour."""
+            """Per-frame spatial mean RGB, shaped (1, 3, T). Reference behaviour."""
             rgb = np.asarray([
                 np.sum(np.sum(frame, axis=0), axis=0) / (frame.shape[0] * frame.shape[1])
                 for frame in frames
@@ -107,14 +107,14 @@ def skin_rgb_trace(frames: torch.Tensor, skin: torch.Tensor | None = None) -> np
 
 def pos(frames: torch.Tensor, skin: torch.Tensor | None = None,
         fps: float = 30.0) -> np.ndarray:
-    """Plane-orthogonal-to-skin. Returns an unfiltered pulse estimate."""
+    """Plane-independent-to-skin. Returns an raw pulse estimate."""
     module = _load("unsupervised_methods.methods.POS_WANG", "POS_WANG.py")
     return np.asarray(module.POS_WANG(skin_rgb_trace(frames, skin), fps)).ravel()
 
 
 def chrom(frames: torch.Tensor, skin: torch.Tensor | None = None,
           fps: float = 30.0) -> np.ndarray:
-    """Chrominance-based estimate. Returns an unfiltered pulse estimate."""
+    """Chrominance-based estimate. Returns an raw pulse estimate."""
     module = _load("unsupervised_methods.methods.CHROME_DEHAAN", "CHROME_DEHAAN.py")
     return np.asarray(module.CHROME_DEHAAN(skin_rgb_trace(frames, skin), fps)).ravel()
 
@@ -154,7 +154,7 @@ def run(loader, methods: tuple[str, ...] = ("pos", "chrom"),
                     continue
                 if len(estimate) != len(truth):
                     # POS and CHROM window internally and can return a shorter
-                    # signal. Compare on the overlap rather than silently padding.
+                    # signal. Compare on the overlap rather than padding without notice.
                     length = min(len(estimate), len(truth))
                     estimate, window_truth = estimate[:length], truth[:length]
                 else:

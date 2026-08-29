@@ -162,7 +162,7 @@ def extract_all(root: Path, store_dir: Path, limit: int | None = None) -> list[d
     for rec in db.iter_rows(named=True):
         try:
             rows.extend(extract_row(rec, root, store_dir))
-        except Exception as exc:  # noqa: BLE001 - one unreadable clip must not end the pass
+        except Exception as exc:  # noqa: BLE001 - one illegible clip must not end the pass
             # One bad recording must not sink 3600 others, but a systemic failure
             # (missing ffmpeg, absent detector) would otherwise be silent.
             if len(failures) < 5:

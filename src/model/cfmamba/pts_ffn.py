@@ -4,27 +4,27 @@ Where CS-FFN mixes channels, this stage works along time: transform to the
 temporal spectrum, apply the learnable cardiac band mask, mix, transform back.
 It is the half of the DF-FFN that carries the physiological prior.
 
-`mode` resolves the one place the paper contradicts itself. Eq. 17's prose says the
+`mode` resolves the one place the paper conflicts with itself. Eq. 17's text states the
 complex weight is "applied to each channel individually, with weights shared across
 all N channels", which reads as a matrix over the *frequency* axis -- shape (T, T),
 fixed to one clip length. But the same sentence points at Eqs. 10-11 for the
 operation, and those define W in C^(N x N) and B in C^N: a matrix over the
 *channel* axis. Two other sources break the tie:
 
-**FreTS (Yi et al., NeurIPS 36), cited by CFMamba as [33]**, is where the design
+**FreTS (Yi et al., NeurIPS 36), referenced by CFMamba as [33]**, is where the design
 comes from, and its frequency temporal learner transforms along time while applying
 W in C^(d x d) to a *different* axis, shared across the N channels (its Eq. 4).
 The transformed axis is left as a batch dimension. CFMamba folded FreTS's three
-axes into two, which is how the prose came to read ambiguously, but the shape it
+axes into two, which is how the text came to read ambiguously, but the shape it
 inherits is the channel one.
 
 **CFMamba Table 4** measured cost on a 900-frame clip while Section 4.1 trained on
-160-frame segments. A (T, T) weight cannot do both, so the literal-prose reading is
+160-frame segments. A (T, T) weight cannot do both, so the literal-text reading is
 inconsistent with the paper's own experiment.
 
-"channel" is therefore the default. "full" is kept as the literal-prose alternative
+"channel" is therefore the default. "full" is kept as the literal-text alternative
 and shown in tests/test_budget.py to be ruled out; "diagonal" and "none" are
-cheaper variants. The published budget decides between the survivors.
+cheaper variants. The published budget determines which of the rest applies.
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
       "channel"   (N, N) complex matrix on the channel axis, shared across every
                   temporal frequency bin. The FreTS-consistent reading, and the one
                   Eq. 17's own reference to Eqs. 10-11 implies. Length-agnostic.
-      "full"      (T, T) complex matrix, the literal reading of Eq. 17's prose.
-                  Couples frequencies, and pins the model to one clip length.
-      "diagonal"  one complex gain per frequency, held on a fixed grid in Hz and
+      "full"      (T, T) complex matrix, the literal reading of Eq. 17's text.
+                  Couples frequencies, and fixes the model to one clip length.
+      "diagonal"  one complex gain per frequency, kept on a fixed grid in Hz and
                   interpolated to whatever T arrives. Length-agnostic and far
                   cheaper; still a per-frequency linear map, just without the
                   cross-frequency coupling.
@@ -78,8 +78,8 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         elif mode == "full":
             self.linear = ComplexLinear(n_frames, n_frames)
         elif mode == "diagonal":
-            # Held in Hz, not in bin indices, for the reason in band_mask.py: a
-            # grid indexed by bin silently means a different filter at every T.
+            # Kept in Hz, not in bin indices, for the reason in band_mask.py: a
+            # grid indexed by bin means a different filter at every T.
             # Initialised to unit gain and zero phase, so the stage starts as the
             # mask alone and has to earn any deviation from it.
             self.gain_re = nn.Parameter(torch.ones(n_bins))
@@ -89,7 +89,7 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         """Interpolate the learned complex gain onto `freqs`, given in Hz.
 
         The gain magnitude is a function of |f|, because a real signal's spectrum
-        is conjugate symmetric and both halves must be filtered alike. Its *phase*
+        is conjugate symmetric and both halves must be filtered the same way. Its *phase*
         is not: a real linear filter satisfies H(-f) = conj(H(f)), so the real part
         is even in f and the imaginary part is odd.
 
@@ -98,7 +98,7 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         contribution lands in the imaginary half of the inverse transform, and
         `.real` throws every bit of it away -- so `gain_im` receives exactly zero
         gradient and is dead for the whole run. Nothing raises; the tensor has the
-        right shape and the loss still falls. It was caught by asserting that a
+        right shape and the loss still falls. It was caught by checking that a
         gradient reaches every parameter, which is the only way a bug shaped like
         this ever surfaces.
         """
@@ -123,7 +123,7 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         # puts a sliver of the filter where `.real` discards it. It sits at fps/2 =
         # 15 Hz, six times any heart rate and already crushed by the mask, so it
         # changes no number today; it is fixed because a filter that is *nearly*
-        # real stops being harmless the moment someone changes fps.
+        # real stops being without effect the moment someone changes fps.
         self_conjugate = freqs.abs() >= self.fps / 2.0 - 1e-6
         phase_sign = torch.where(
             self_conjugate, torch.zeros_like(freqs), torch.sign(freqs)
@@ -139,7 +139,7 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
 
         if self.mode == "channel":
             # Eq. 17 with the Eq. 10-11 shapes: mixing runs over channels, and the
-            # temporal frequency axis rides along as a batch dimension. The mask
+            # temporal frequency axis acts as a batch dimension. The mask
             # above is what makes this stage temporal; the projection is what makes
             # it a projection.
             spectrum = complex_activation(self.linear(spectrum), self.activation)

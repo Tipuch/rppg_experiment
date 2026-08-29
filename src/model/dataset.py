@@ -3,7 +3,7 @@
 Nothing is materialised to disk. Storing preprocessed frames for all of MCD at
 256x256 would need roughly 3 TB at native frame rate; decoding a window costs
 0.3-0.6 s on these files and parallelises across workers, so the frames are
-produced when the batch needs them and discarded afterwards.
+produced when the batch needs them and thrown away afterwards.
 
 The expensive, deterministic parts -- face box and skin mask -- are read from
 build/clips.parquet, precomputed once by src/model/clips.py. Only decoding and
@@ -51,7 +51,7 @@ MASK_RES = 256
 # Kept as an alias: src/model/clips.py stores masks at this side.
 CROP = MASK_RES
 # Fraction of the face box the augmentation crop keeps, leaving the remaining
-# 12.5% as translation jitter. Was expressed as 224-out-of-256; a fraction says
+# 12.5% as translation jitter. Was expressed as 224-out-of-256; a fraction states
 # the same thing without implying an intermediate resolution that no longer exists.
 AUG_FRACTION = 224 / 256
 # What the model is actually fed. CFMamba-Phys, RhythmMamba and RhythmFormer all
@@ -62,7 +62,7 @@ DEFAULT_CLIP_FRAMES = 160
 # Heart rate only. Blood pressure is out of scope: CFMamba-Phys predicts a
 # waveform and reads no scalar target at all, and nothing on disk pairs facial
 # video with blood pressure and a recoverable pulse (see DATASETS.md). The
-# manifest still carries sbp_mmhg and dbp_mmhg -- they are inert here, not gone.
+# manifest still carries sbp_mmhg and dbp_mmhg -- they are dead here, not gone.
 DEFAULT_TARGETS = ("hr_bpm",)
 
 # BT.601 luma weights. They sum to 1, which is what lets a constant added to R, G
@@ -85,7 +85,7 @@ TARGET_FPS = 30.0
 #
 # The distinction is not cosmetic for a two-branch stem: `alpha*X_raw +
 # beta*X_diff` mixes the two branches, and although each has its own BatchNorm
-# the relative scale entering those norms differs by three orders of magnitude
+# the relative scale entering those norms departs by three orders of magnitude
 # between the two settings.
 FRAME_NORMALISATIONS = ("standardized", "raw")
 
@@ -95,7 +95,7 @@ FRAME_NORMALISATIONS = ("standardized", "raw")
 #
 # The arithmetic, which is what fixes the direction: decoding n_frames at
 # target_fps = TARGET_FPS * k covers n_frames / (TARGET_FPS * k) seconds, so the
-# window holds hr_true / 60 * n_frames / (TARGET_FPS * k) beats. Post-processing
+# window keeps hr_true / 60 * n_frames / (TARGET_FPS * k) beats. Post-processing
 # assumes TARGET_FPS, so the apparent rate is hr_true / k. k > 1 lowers it.
 HR_HIGH_BPM = 90.0
 HR_LOW_BPM = 75.0
@@ -138,7 +138,7 @@ class WindowDataset(Dataset):
         self.targets = tuple(targets)
         # Off by default: none of the three papers masks, and PGA's Gaussian prior
         # is what focuses the model on skin. The mask is still returned either way,
-        # because PGA derives that prior's centroid and spread from it.
+        # because PGA obtains that prior's centroid and spread from it.
         self.apply_skin_mask = apply_skin_mask
         if frame_norm not in FRAME_NORMALISATIONS:
             raise ValueError(
@@ -153,7 +153,7 @@ class WindowDataset(Dataset):
         self.return_waveform = return_waveform
         # Where src/model/framecache.py put the decoded face boxes. A clip with no
         # entry there falls back to ffmpeg, so MCD and any corpus that was never
-        # cached still load unchanged; None disables the cache outright, which is
+        # cached still load unchanged; None disables the cache directly, which is
         # what the equivalence tests use to force the decoder path.
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         # One RNG per worker process, created lazily in _rng so each worker gets
@@ -179,10 +179,10 @@ class WindowDataset(Dataset):
 
         **Training draws from one continuous per-worker stream, not a per-index
         seed.** The seed used to be `self.seed * 1_000_003 + index`, and nothing
-        mutated `self.seed` between epochs, so a segment saw one fixed crop, one
+        altered `self.seed` between epochs, so a segment saw one fixed crop, one
         fixed flip and one fixed resampling factor for the whole run -- a 50/50
         partition assigned once rather than an augmentation. Measured: segment 0
-        drew crop (22, 19) and flip False in every epoch of a run.
+        took crop (22, 19) and flip False in every epoch of a run.
 
         The usual fix is to reseed from `torch.initial_seed()`, which DataLoader
         varies per epoch. That does not work here: `persistent_workers=True` keeps
@@ -197,15 +197,15 @@ class WindowDataset(Dataset):
         if not self.train:
             return random.Random(index)
         if self._stream is None:
-            # Mixed with the pid so sibling workers, which are forked from one
-            # parent and would otherwise share a seed, do not draw in lockstep.
+            # Mixed with the pid so peer workers, which are forked from one
+            # parent and would otherwise share a seed, do not draw the same sequence.
             self._stream = random.Random(self.seed * 1_000_003 + os.getpid())
         return self._stream
 
     def _cached(self, row: dict) -> np.memmap | None:
         """The clip's cached face box, or None if it was never built.
 
-        Held open per worker. A memmap is a file mapping, not a buffer, so twelve
+        Kept open per worker. A memmap is a file mapping, not a buffer, so twelve
         workers share one set of pages and the dict costs a handle apiece.
         """
         key = row["clip_id"]
@@ -223,18 +223,18 @@ class WindowDataset(Dataset):
     def _window_start(self, row: dict, k: float, rng: random.Random) -> float:
         """Where in the recording this window begins, in seconds.
 
-        Two cases. A row carrying `window_start_s` came from `expand_to_segments`,
+        Two cases. A row bringing `window_start_s` came from `expand_to_segments`,
         so its position is fixed by the enumeration and is used exactly, in training
         as well as evaluation. A row without it is one window per clip: centred for
         evaluation so the number is reproducible, random for training so successive
         epochs see different parts of the recording.
 
         Enumerated starts used to be jittered by up to +/-0.5 s in training, on the
-        argument that a segment boundary is an artefact of the enumeration rather
+        argument that a segment boundary is an artifact of the enumeration rather
         than of the recording. That was removed: it was the only thing breaking the
         strict non-overlap both source papers score under, and at +/-0.5 s two
         adjacent 5.33 s windows could share a second of footage, so each window
-        leaked into its neighbours.
+        escaped into its neighbours.
         """
         latest = max(0.0, row["duration_s"] - self._span(k))
         fixed = row.get("window_start_s")
@@ -273,7 +273,7 @@ class WindowDataset(Dataset):
         else:
             return 1.0
         # k < 1 stretches the window in real time. If that no longer fits inside
-        # the recording, fall back rather than silently reading a short window.
+        # the recording, fall back rather than invisibly reading a short window.
         if start + self._span(k) > row["duration_s"]:
             return 1.0
         return k
@@ -336,8 +336,8 @@ class WindowDataset(Dataset):
         INTER_AREA integrates every source pixel that lands in an output pixel, so
         it preserves the local mean exactly -- which is the whole signal here, a
         spatially smooth sub-LSB brightness change. But **cv2.INTER_AREA degenerates
-        to nearest-neighbour when asked to enlarge**: measured, a 4x4 ramp taken to
-        8x8 comes back bit-identical to INTER_NEAREST (16 distinct values against
+        to nearest-neighbour when requested to enlarge**: measured, a 4x4 ramp taken to
+        8x8 comes back exactly equal to INTER_NEAREST (16 distinct values against
         INTER_LINEAR's 44). So enlarging uses INTER_LINEAR, which interpolates and
         does not overshoot.
 
@@ -354,8 +354,8 @@ class WindowDataset(Dataset):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Random horizontal flip, applied to frames and skin mask together.
 
-        Together is the whole point. PGA derives its Gaussian prior's centroid from
-        the mask, so flipping one without the other aims the physiological prior at
+        Together is the whole point. PGA obtains its Gaussian prior's centroid from
+        the mask, so switching one without the other aims the physiological prior at
         the mirror image of the face the model is actually looking at -- and
         nothing raises, because both tensors keep their shape.
 
@@ -371,9 +371,9 @@ class WindowDataset(Dataset):
         """Scale the window as the toolbox does, so the network sees its input.
 
         `standardized` uses one scalar mean and std for the whole window --
-        deliberately, not per channel and not per frame. A per-channel z-score
+        intentionally, not per channel and not per frame. A per-channel z-score
         would flatten the chrominance differences between R, G and B, and the
-        pulse lives in exactly those: haemoglobin absorbs green far more than red.
+        pulse resides in exactly those: haemoglobin absorbs green far more than red.
         A per-frame z-score would be worse still, removing the frame-to-frame
         brightness change that *is* the signal.
         """
@@ -387,7 +387,7 @@ class WindowDataset(Dataset):
     def _waveform(self, row: dict, start: float, k: float) -> np.ndarray:
         """Contact PPG over this window, on the same timebase as the frames.
 
-        Sampled at the frame times the decoder was asked for -- start + i/(fps*k)
+        Sampled at the frame times the decoder was requested for -- start + i/(fps*k)
         -- so target sample i corresponds to frame i whatever k is. Getting this
         wrong under augmentation would desynchronise every target.
 
@@ -406,16 +406,16 @@ class WindowDataset(Dataset):
         key = row.get("ppg_video_path") or row["video_path"]
         if key not in self._ppg:
             video = Path(key)
-            # The cache holds the same trace already parsed. load_ppg reads text
+            # The cache keeps the same trace already parsed. load_ppg reads text
             # with np.loadtxt, and the evaluation loaders are not persistent, so
             # their workers re-parsed every dev clip on every epoch.
             loaded = (
                 None if self.cache_dir is None
                 else framecache.open_ppg(self.cache_dir, row["clip_id"])
             )
-            # MCD-rPPG's waveform lives beside the video rather than inside a
+            # MCD-rPPG's waveform resides beside the video rather than inside a
             # per-clip directory, and is timed from the frame rate rather than
-            # carrying timestamps, so both are passed through.
+            # bringing timestamps, so both are passed through.
             if loaded is None:
                 loaded = load_ppg(video.parent, video_path=video, fps=row["fps"])
             self._ppg[key] = loaded
@@ -476,7 +476,7 @@ class WindowDataset(Dataset):
         # This used to go box -> 256 -> crop 224 -> 128, three resampling steps for
         # one crop. Worse, 94% of clips have a face box smaller than 256, so the
         # first step was an *enlargement* -- and cv2.INTER_AREA enlarging is
-        # bit-identical to INTER_NEAREST, so those clips were pixel-duplicated up
+        # exactly equal to INTER_NEAREST, so those clips were pixel-duplicated up
         # and then averaged back down. Measured on eight UBFC clips, the recovered
         # rate was unchanged and peak prominence moved by a few percent either way,
         # so it was costing precision rather than signal. It is still wrong, and
@@ -496,7 +496,7 @@ class WindowDataset(Dataset):
         side = self.resolution
         frames = np.stack([self._resize(f, side) for f in cropped])[:, :, :, ::-1]
 
-        # The cached mask lives in its own 256-pixel frame, so the same sub-window
+        # The cached mask resides in its own 256-pixel frame, so the same sub-window
         # has to be mapped into it rather than taken at face value. Skin coverage
         # stays a float, not a bool: PGA reads a centroid and a spatial spread off
         # it, and an area-resampled float mask gives the fraction of each output
@@ -562,12 +562,12 @@ def split_manifest(
 ) -> dict[str, pl.DataFrame]:
     """Subject-grouped 85/10/5, reusing the aggregation splitter.
 
-    Grouping by subject is not optional: windows from one recording are
+    Grouping by subject is required: windows from one recording are
     near-duplicates of each other, so a row-level split would score a model on
     people it trained on.
 
     **Pass segments, not clips.** `assign` balances the split by row count, so
-    handing it clips gives 85/10/5 in *clips* -- and clip length varies by 4x
+    giving it clips gives 85/10/5 in *clips* -- and clip length varies by 4x
     across this corpus (UBFC's 43-118 s against MCD's 111-225 s), so the ratios
     the model actually trains and is scored on would drift from the target. Call
     `expand_to_segments` first and the row count is the segment count.
@@ -625,7 +625,7 @@ def expand_to_segments(
             # The epsilon is not cosmetic. A clip whose duration is an exact
             # multiple of the span -- mcd/8679_IriunWebcam_after is exactly 160.0 s
             # -- lands on a floating-point boundary where (duration - span) / stride
-            # evaluates to 28.999999 instead of 29.0, and the floor silently drops a
+            # evaluates to 28.999999 instead of 29.0, and the floor invisibly drops a
             # whole segment. One clip in 3648, and the kind of off-by-one that is
             # cheaper to remove than to remember.
             count = int((duration - span) / stride + 1e-9) + 1
@@ -661,7 +661,7 @@ def paper_split(
     that is on disk. They include the corpus's only post-exercise recording at 108
     bpm, which is exactly the part of the range UBFC is otherwise short of.
 
-    There is no validation split, deliberately: neither paper has one, and both
+    There is no validation split, intentionally: neither paper has one, and both
     report the last epoch. Inventing one here would make the numbers incomparable
     and would tempt checkpoint selection on twelve subjects.
     """

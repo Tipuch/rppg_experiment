@@ -3,12 +3,12 @@
 Scope is the strict intersection of the blood-pressure datasets that also filmed
 faces: facial images, HR, SBP, DBP. Nothing else.
 
-Out of scope, and deliberately without extractors: SCAMPS, UBFC and MR-NIRP have
+Out of scope, and intentionally without extractors: SCAMPS, UBFC and MR-NIRP have
 facial video but no blood pressure, and BIDMC and BUT PPG have blood pressure but
 no camera. Neither group can satisfy the gate below, which requires all three
-targets on every row. AGGREGATION_PLAN.md records what each of them holds.
+targets on every row. AGGREGATION_PLAN.md records what each of them keeps.
 
-Polars holds the manifest and labels only. Frames live in .npy stores that rows
+Polars keeps the manifest and labels only. Frames live in .npy stores that rows
 point at via frames_path/frames_offset -- one 128x128x300x3 window is ~14.7 MB,
 so keeping pixels in the table would make it unusable.
 """
@@ -69,7 +69,7 @@ SCHEMA: dict[str, pl.DataType] = {
 
 TARGETS = ["hr_bpm", "sbp_mmhg", "dbp_mmhg"]
 
-# Plausible physiological ranges, asserted by the validation gate.
+# Credible physiological ranges, checked by the validation gate.
 UNIT_RANGES: dict[str, tuple[float, float]] = {
     "hr_bpm": (30.0, 220.0),
     "sbp_mmhg": (70.0, 220.0),

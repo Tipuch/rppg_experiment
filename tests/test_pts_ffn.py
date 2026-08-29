@@ -25,7 +25,7 @@ def test_the_gain_phase_is_odd_in_frequency() -> None:
     With an even imaginary part the whole imaginary-gain contribution lands in the
     imaginary half of the inverse transform and `.real` discards it, so `gain_im`
     receives exactly zero gradient for the entire run while everything looks fine.
-    This assertion is what makes that loud.
+    This assertion is what makes that noisy.
     """
     ffn = PhysiologyTemporalSpectralFFN(hidden=4, fps=FPS, mode="diagonal")
     with torch.no_grad():
@@ -38,7 +38,7 @@ def test_the_gain_phase_is_odd_in_frequency() -> None:
 @pytest.mark.parametrize("n_frames", [63, 64])
 def test_self_conjugate_bins_stay_real(n_frames: int) -> None:
     """DC always, and Nyquist whenever T is even: both are their own conjugate
-    partner, so a complex gain there is silently discarded."""
+    partner, so a complex gain there is discarded without notice."""
     ffn = PhysiologyTemporalSpectralFFN(hidden=4, fps=FPS, mode="diagonal")
     with torch.no_grad():
         ffn.gain_im.normal_()

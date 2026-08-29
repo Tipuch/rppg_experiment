@@ -1,4 +1,4 @@
-"""The DF-FFN wrapper: expansion, stage order, dtype discipline.
+"""The DF-FFN wrapper: expansion, stage order, dtype rigour.
 
 The two spectral stages have their own tests in test_cs_ffn.py and
 test_pts_ffn.py. What is left here is what only the wrapper can get wrong.
@@ -44,8 +44,8 @@ def test_the_stages_run_channel_first_then_time() -> None:
 
 def test_the_module_is_non_linear_only_because_of_the_frets_activation() -> None:
     """Section 3.3 names no activation, and implemented literally the whole DF-FFN
-    collapses to one linear operator -- measured, affine error 2.2e-07 against
-    6.4e-01 for an ordinary two-layer MLP. Four stacked linear blocks add nothing
+    reduces to one linear operator -- measured, affine error 2.2e-07 against
+    6.4e-01 for an normal two-layer MLP. Four stacked linear blocks add nothing
     the Mamba layers do not already do, which cannot be what an ablation worth
     0.36 against 0.59 MAE is describing. The activation goes where FreTS Eq. 7
     puts it: inside each complex linear.
@@ -59,7 +59,7 @@ def test_the_module_is_non_linear_only_because_of_the_frets_activation() -> None
             rhs = 2.0 * module(x1) - module(x2)
         return float((lhs - rhs).abs().max() / rhs.abs().max())
 
-    # That this is linear with activation=None also proves the module's only
+    # That this is linear with activation=None also confirms the module's only
     # non-linearity is the one inside the complex linears -- an extra activation
     # anywhere outside them, as an earlier version had before the output
     # projection, would show up here.
@@ -77,7 +77,7 @@ def test_the_module_is_non_linear_only_because_of_the_frets_activation() -> None
 
 
 def test_spectral_work_stays_in_float32_under_autocast() -> None:
-    """FFT has no autocast kernel and complex bf16 loses more than the memory is
+    """FFT has no autocast kernel and complex bf16 forfeits more than the memory is
     worth on a 0.9M-parameter model."""
     ffn = DualFrequencyFFN(dim=6, hidden=12, fps=FPS)
     x = torch.randn(1, 32, 6)

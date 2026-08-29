@@ -56,7 +56,7 @@ def parse_labels(stem: str) -> dict | None:
 def extract_clip(video_path: Path, store_dir: Path) -> list[dict]:
     labels = parse_labels(video_path.stem)
     if labels is None:
-        raise ValueError(f"unparseable CLBP-300 filename: {video_path.name}")
+        raise ValueError(f"malformed CLBP-300 filename: {video_path.name}")
 
     # ffmpeg resamples 60 -> 30 fps and downscales in one pass, so the 4K source
     # never materialises in full (a decoded clip would be ~48 GB).
@@ -101,7 +101,7 @@ def extract_all(root: Path, store_dir: Path) -> list[dict]:
     for p in sorted(root.glob("*.mov")):
         try:
             rows.extend(extract_clip(p, store_dir))
-        except Exception as exc:  # noqa: BLE001 - one unreadable clip must not end the pass
-            # One unparseable filename must not discard the whole source.
+        except Exception as exc:  # noqa: BLE001 - one illegible clip must not end the pass
+            # One malformed filename must not discard the whole source.
             print(f"    clbp300 skip {p.name}: {type(exc).__name__}: {exc}")
     return rows
