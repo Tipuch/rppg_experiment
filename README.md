@@ -53,6 +53,7 @@ uv run python -m src.cli check     # shapes, parameter budget, throughput
 uv run python -m src.cli sanity    # recover a synthetic pulse
 uv run python -m src.cli baseline  # POS and CHROM on the test windows
 uv run python -m src.cli train     # fit, then score the last epoch
+uv run python -m src.cli predict   # run one video through a model, plot the pulse
 uv run python tools/plot_loss.py build/runs/<name>
 ```
 

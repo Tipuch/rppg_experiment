@@ -35,6 +35,7 @@ def cli() -> None:
       8. sanity    can the model recover a pulse it was handed? synthetic
       9. baseline  POS and CHROM on the test windows -- the floor to beat
      10. train     fit, then score the last epoch against that floor
+     11. predict   run one video through a trained model and plot the pulse
     """
 
 
@@ -593,6 +594,114 @@ def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
         baselines=not no_baselines, profile=profile, resume=resume, out_dir=out,
     )
     run_training(config, manifest)
+
+@cli.command()
+@click.option("--video", required=True, type=click.Path(exists=True, path_type=Path),
+              help="Any face video. Needs no manifest entry -- the face box and "
+                   "skin mask are built inline.")
+@click.option("--model", "model_path", type=click.Path(exists=True, path_type=Path),
+              default=None,
+              help="Checkpoint to run. Defaults to the most recently written "
+                   "build/runs/*/final.pt or last.pt.")
+@click.option("--start", type=float, default=0.0, show_default=True,
+              help="Seconds into the recording to begin.")
+@click.option("--seconds", type=float, default=30.0, show_default=True,
+              help="Seconds of recording to run. 0 means to the end.")
+@click.option("--batch", type=int, default=1, show_default=True,
+              help="Windows per forward pass. 1 by default: a 300-frame window is "
+                   "the same activation footprint a training step has, and a short "
+                   "clip is a handful of windows, so there is nothing to gain and a "
+                   "shared card to run out of.")
+@click.option("--workers", type=int, default=4, show_default=True)
+@click.option("--out", type=click.Path(path_type=Path), default=None,
+              help="PNG to write. Defaults to build/predict/<directory>__<stem>.png.")
+def predict(video: Path, model_path: Path | None, start: float, seconds: float,
+            batch: int, workers: int, out: Path | None) -> None:
+    """Run one video through a trained model and plot the pulse it predicts.
+
+    The window length is not an option: it is read from the checkpoint, because
+    the model's temporal axis is fixed at the length it was built with. A 300-frame
+    run therefore reads 10 s at a time, and a longer clip becomes consecutive
+    non-overlapping windows laid end to end.
+
+    The y axis has no units. Eq. 19's temporal term is negative Pearson, which is
+    invariant to a positive scale factor, so each window is z-scored before the
+    stitch and only the timing carries meaning.
+
+    Two rates are reported: the dominant cardiac-band spectral peak, which is what
+    every table in this project quotes, and the median inter-beat interval of the
+    marked peaks.
+    """
+    import numpy as np
+    import torch
+
+    from .model import predict as predict_mod
+    from .model import predict_plot
+    from .model.dataset import TARGET_FPS
+
+    if not torch.cuda.is_available():
+        raise click.ClickException("CUDA required: mamba_ssm has no CPU kernel.")
+
+    checkpoint = model_path or predict_mod.latest_checkpoint()
+    model, config, state = predict_mod.load_model(checkpoint)
+    span = config.n_frames / TARGET_FPS
+    click.echo(f"{checkpoint}  epoch {state.get('epochs', '?')}  "
+               f"{config.n_frames} frames per window ({span:.1f}s at {TARGET_FPS:.0f} fps)")
+
+    try:
+        dataset, segments, row = predict_mod.prepare(
+            video, config, start_s=start, seconds=seconds or None
+        )
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f"{video.name}: {row['fps']:.2f} fps, {row['duration_s']:.1f}s, "
+               f"skin {row['skin_frac'] * 100:.0f}% -> {segments.height} windows")
+
+    try:
+        windows, truth = predict_mod.run_windows(
+            model, dataset, batch_size=batch, workers=workers
+        )
+    except torch.OutOfMemoryError as error:
+        # --seconds is not the lever here. Windows run one batch at a time, so peak
+        # memory is set by the checkpoint's window length and --batch, not by how
+        # much of the recording is being read.
+        free, total = torch.cuda.mem_get_info()
+        raise click.ClickException(
+            f"out of GPU memory at batch {batch} on a {config.n_frames}-frame "
+            f"window: {free / 1e9:.1f} of {total / 1e9:.1f} GB free. Lower --batch, "
+            f"or free the card -- a shorter --seconds will not help, because peak "
+            f"memory is per window.\n  {error}"
+        ) from error
+    result = predict_mod.analyse(windows, TARGET_FPS, truth=truth)
+
+    per_window = result["per_window_bpm"]
+    finite = per_window[np.isfinite(per_window)]
+    click.echo(f"\n  {result['bpm_fft']:.1f} bpm  dominant cardiac-band peak "
+               f"over {result['seconds']:.1f}s")
+    click.echo(f"  {result['bpm_beats']:.1f} bpm  median inter-beat interval, "
+               f"{len(result['peaks'])} beats")
+    if len(finite):
+        click.echo(f"  per window: {finite.min():.1f}-{finite.max():.1f} bpm "
+                   f"over {len(finite)} windows")
+    if "bpm_true" in result:
+        click.echo(f"\n  {result['bpm_true']:.1f} bpm  contact PPG over the same "
+                   f"windows  -> {result['bpm_fft'] - result['bpm_true']:+.1f} bpm, "
+                   f"MACC {result['macc']:.3f}")
+
+    out = out or Path("build/predict") / f"{predict_mod.clip_name(video)}.png"
+    predict_plot.plot(
+        result["trace"], result["peaks"], fps=TARGET_FPS, start_s=start,
+        bpm_fft=result["bpm_fft"], bpm_beats=result["bpm_beats"],
+        seams=result["seams"], title=video.name,
+        subtitle=f"{checkpoint}  ·  {config.n_frames}-frame windows",
+        out=out, truth=result.get("truth"), bpm_true=result.get("bpm_true"),
+    )
+    # The trace as well as the picture, so the numbers can be checked rather than
+    # only eyeballed. Same reason `samples` writes its .npy.
+    wave_path = out.with_name(f"{out.stem}_wave.npy")
+    np.save(wave_path, result["trace"])
+    click.echo(f"\nwrote {out} and {wave_path}")
+
 
 if __name__ == "__main__":
     cli()

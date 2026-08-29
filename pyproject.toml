@@ -8,6 +8,9 @@ dependencies = [
     "click>=8.4.2",
     "h5py>=3.16.0",
     "mamba-ssm>=2.3",
+    # Arrives transitively via wfdb, but src/model/predict_plot.py imports it
+    # directly and tools/ has for longer. A transitive graph is not a contract.
+    "matplotlib>=3.11",
     "numpy>=2.5.2",
     "opencv-python>=5.0.0.93",
     "polars>=1.43.2",
