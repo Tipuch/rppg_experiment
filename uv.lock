@@ -9,7 +9,7 @@ supported-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "mamba-ssm", specifier = ">=2.3" }]
+overrides = [{ name = "mamba-ssm", specifier = ">=2.3.2" }]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -426,7 +426,7 @@ dev = [
 requires-dist = [
     { name = "click", specifier = ">=8.4.2" },
     { name = "h5py", specifier = ">=3.16.0" },
-    { name = "mamba-ssm", specifier = ">=2.3" },
+    { name = "mamba-ssm", specifier = ">=2.3.2" },
     { name = "matplotlib", specifier = ">=3.11" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "opencv-python", specifier = ">=5.0.0.93" },
