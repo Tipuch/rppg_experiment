@@ -63,7 +63,8 @@ RESOLUTION = 128
 # Measured at the training length. MACs per frame are length-invariant except for
 # the FFTs, which grow as log T -- a few percent between 160 and the paper's 900,
 # and 900 frames at 128x128 does not fit an 8 GB card.
-N_FRAMES = 160
+N_FRAMES = 160          # the length the published cost was measured against
+DEFAULT_N_FRAMES = 300  # the length this project trains at; see the test below
 
 # 4%, down from the 6% the Mamba-1 scan needed. CAM's expansion rate of 1.0 is a
 # textual choice costing +5.04%, and the gate had to fund it; Mamba-3 gave most of
@@ -113,11 +114,32 @@ def test_macs_per_frame_matches_the_paper() -> None:
     )
 
 
-def test_the_default_clip_length_is_the_one_the_paper_trained_on() -> None:
-    """160 frames, Section 4.1. RhythmFormer's Table 11 measures it as the optimum
-    (3.07 MAE, against 3.53 at 80 and 3.86 at 320) -- longer segments lose the face
-    because detection runs only on the first frame."""
-    assert CFMambaPhys().n_frames == N_FRAMES
+def test_the_default_clip_length_departs_from_the_paper_deliberately() -> None:
+    """This project trains on 300-frame (10 s) windows, not the paper's 160.
+
+    A deliberate departure, pinned here so it cannot drift back or be mistaken for
+    the published configuration. Section 4.1 uses 160, and RhythmFormer's Table 11
+    measures 160 as the optimum (3.07 MAE against 3.53 at 80 and 3.86 at 320), so
+    **numbers produced at 300 are not directly comparable with published ones**.
+
+    What 300 buys is spectral resolution: FFT bins fall from 11.25 bpm to 6.0 bpm.
+    The cost budget below is still measured at the paper's 160, because that is
+    the length Table 4 was measured against.
+    """
+    assert CFMambaPhys().n_frames == DEFAULT_N_FRAMES
+    assert 30.0 * 60 / N_FRAMES == pytest.approx(11.25)
+    assert 30.0 * 60 / DEFAULT_N_FRAMES == pytest.approx(6.0)
+
+
+def test_the_model_still_accepts_the_length_the_cost_was_measured_at() -> None:
+    """Changing the default must not fix the model to one length.
+
+    Table 4's cost was measured on a 900-frame clip while training used 160, so a
+    module whose weights are sized by T would have been impossible all along --
+    and the failure is silent, since the tensors keep their shape.
+    """
+    assert CFMambaPhys(n_frames=N_FRAMES).n_frames == N_FRAMES
+    assert CFMambaPhys(n_frames=900).n_frames == 900
 
 
 def test_the_default_pts_mode_can_accept_the_length_the_cost_was_measured_at() -> None:

@@ -22,73 +22,24 @@ import torch
 HR_BAND = (0.7, 3.5)          # 42-210 bpm
 
 
-# MCD-rPPG keeps one PPG sample per video frame in ppg_sync/<name>.txt, alongside
-# video/<name>.avi. Column 0 is the amplitude, column 1 a per-frame capture
-# interval that is not needed once the alignment is known.
-MCD_PPG_DIR = "ppg_sync"
-MCD_VIDEO_DIR = "video"
-
-
 def load_ppg(
-    clip_dir: Path, video_path: Path | None = None, fps: float | None = None
+    clip_dir: Path, video_path: Path | None = None, fps: float | None = None,
+    source: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """Contact PPG as (times in seconds from clip start, values), or None.
 
-    Three formats, one per corpus that has a waveform at all:
+    One line of dispatch over `src.datasets`, where each corpus owns its own
+    label format. It used to be three inline branches here, which meant a new
+    corpus had to be remembered in two files -- and forgetting this one is
+    invisible: a None return makes `WindowDataset._waveform` substitute zeros,
+    and the model trains against a flat target without anything raising.
 
-      UBFC DATASET_2  <clip>/ground_truth.txt   3 rows: PPG, HR, timestamps (s)
-      UBFC DATASET_1  <clip>/gtdump.xmp         4 cols: time ms, HR, SpO2, PPG
-      MCD-rPPG        ppg_sync/<name>.txt       one sample per video frame
-
-    MCD carries no timestamps because it does not need them: the file is already
-    frame-synchronised, one sample per frame, so the time axis is reconstructed
-    from the video's own frame rate. Verified on the manifest -- 5383 samples
-    against 5391 frames on the first clip checked, and within a handful across a
-    random sample of twelve.
-
-    CLBP-300 is absent intentionally: its five clips ship as plain .mov files with
-    the labels encoded in the filename and no waveform at all, so they cannot
-    support per-frame supervision.
+    Imported inside the function because `src.datasets.mrnirp` imports
+    `hr_from_waveform` from this module.
     """
-    mcd = _load_mcd_ppg(video_path, fps)
-    if mcd is not None:
-        return mcd
+    from ..datasets import load_ppg as dispatch
 
-    ground_truth = clip_dir / "ground_truth.txt"
-    if ground_truth.exists():
-        arr = np.loadtxt(ground_truth)
-        if arr.ndim != 2 or arr.shape[0] < 3:
-            return None
-        times, values = arr[2].astype(np.float64), arr[0].astype(np.float64)
-    else:
-        dump = clip_dir / "gtdump.xmp"
-        if not dump.exists():
-            return None
-        arr = np.loadtxt(dump, delimiter=",")
-        if arr.ndim != 2 or arr.shape[1] < 4:
-            return None
-        times, values = arr[:, 0] / 1000.0, arr[:, 3]
-    if times.size < 2:
-        return None
-    return times - times[0], values
-
-
-def _load_mcd_ppg(
-    video_path: Path | None, fps: float | None
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """MCD-rPPG's frame-synchronised PPG, timed from the video's frame rate."""
-    if video_path is None or fps is None or fps <= 0:
-        return None
-    if video_path.parent.name != MCD_VIDEO_DIR:
-        return None
-    path = video_path.parent.parent / MCD_PPG_DIR / f"{video_path.stem}.txt"
-    if not path.exists():
-        return None
-    arr = np.loadtxt(path)
-    values = arr[:, 0] if arr.ndim == 2 else arr
-    if values.size < 2:
-        return None
-    return np.arange(values.size, dtype=np.float64) / float(fps), values.astype(np.float64)
+    return dispatch(clip_dir, video_path=video_path, fps=fps, source=source)
 
 
 def sample_ppg(

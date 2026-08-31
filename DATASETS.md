@@ -1,49 +1,32 @@
 # Dataset inventory
 
-Eight datasets on disk, ~225 GiB actual. Categorised by what they can actually be used for,
-which is not the same as what they nominally contain.
+Nine corpora on disk. Categorised by what they can actually be used for, which is
+not the same as what they nominally contain.
 
-The conclusive question for any rPPG source is **does the video contain a recoverable
-pulse**, and it is measured, not presumed:
+**The target is the pulse waveform, and heart rate read off it.** Blood pressure
+was the original goal and is no longer in scope. Two corpora here ship cuff
+readings and the manifest still carries nullable `sbp_mmhg` / `dbp_mmhg` columns,
+but nothing trains on them; they are recorded below as a property of the data,
+not as a target.
 
-    uv run python -m src.cli audit --manifest build/clips.parquet
-
-A clip passes when its mean-skin-luma spectrum has a cardiac peak that (a) is not
-pinned to the bottom of the search band, (b) remains clear of the noise floor, and
-(c) agrees with the named HR within 10 bpm. Chance agreement is ~12%, so a pass
-rate below that means no signal at all.
+**On the pass rates below.** They come from a spectral audit that has since been
+removed. Its resolution was its own binding constraint (7.03 bpm bins against a
+10 bpm tolerance), so read them as one weak signal, not as a gate.
 
 ---
 
-## A. Usable for rPPG from video
+## A. Video with a usable pulse
 
-### UBFC-rPPG -- the only source with a confirmed pulse in the pixels
+### UBFC-rPPG -- the reference corpus
 
 | | |
 |---|---|
-| on disk | 86 GB: **all 50 labels, all 50 videos** (complete as of 2026-08-23) |
+| on disk | 86 GB: all 50 labels, all 50 videos (complete as of 2026-08-23) |
 | subjects | 50 (8 in DATASET_1, 42 in DATASET_2) |
-| labels | HR and contact PPG. **No blood pressure.** |
+| labels | HR and contact PPG |
 | video | rawvideo AVI, 640x480, **uncompressed**, 1.0-2.9 GB per clip |
 | duration | 46-118 s per clip, 55 min total |
-
-| audit | **25/48 pass (52.1%)**, 20.8% peakless, median prominence 28.4 |
-
-Audited 2026-08-24, all 48 clips that have both a video and a label. 52.1% against
-a ~12% chance rate, and against MCD-rPPG's 4.4%. This is the only corpus here that
-clears the bar at scale.
-
-| subset | clips | pass | peakless | med prominence |
-|---|---|---|---|---|
-| DATASET_1 | 6 | 4 (66.7%) | 16.7% | 96.5 |
-| DATASET_2 | 42 | 21 (50.0%) | 21.4% | 22.8 |
-
-Filtering on pixel-only criteria (peak exists, prominence >= 3) keeps 38 clips, and
-those agree with the label 65.8% of the time -- scored after selection, never used
-for it. `build/clips_clean_ubfc.parquet`.
-
-The single clip checked before the rest came in reproduces exactly: `10-gt` returns
-**70.3 bpm against a named 72**, prominence 82.
+| pass rate | 25/48 (52.1%), 20.8% peakless, median prominence 28.4 |
 
 **Frame rate is not 30 and not constant.** DATASET_1 runs at 28.67 fps; DATASET_2
 ranges 28.77-29.98 fps, except subjects **25, 26 and 27, which run at 23.2-23.4
@@ -52,8 +35,8 @@ badly.
 
 **DATASET_2 labels align 1:1 with frames.** All 42 subjects have exactly as many
 PPG/HR samples as video frames -- no resampling needed. DATASET_1 does not: its
-oximeter runs at 62 Hz against 28.67 fps (ratio 2.168-2.179), so `gtdump.xmp`
-column 1 (ms) must be used to resample onto frame times.
+oximeter runs at 62 Hz against 28.67 fps, so `gtdump.xmp` column 0 (ms) must be
+used to resample onto frame times.
 
 **The HR column in DATASET_2 drops out on five subjects.** It clips at 127 and
 falls to 1:
@@ -68,153 +51,199 @@ falls to 1:
 
 The contact PPG on those same subjects is intact -- subject20's waveform spans
 -2.06 to 3.41 with a longest flat run of 6 samples. The sensor was fine; its HR
-readout was not.
-
-**This matters less than it looks.** `clips.py` already takes a median over
-physiological values rather than a mean, and that median sits **2.05 bpm** from a
-Welch estimate on the contact PPG across all 42 subjects. Relabelling from the PPG
-moves the audit from 21/42 to 23/42 -- worth doing, not conclusive. The one real
-casualty is **subject24: named 96 bpm, PPG states 127.2**, and it passes the audit
-against the PPG figure and fails against the label.
+readout was not. `src/datasets/ubfc.py` takes a median over physiological values
+rather than a mean, which sits **2.05 bpm** from a Welch estimate on the contact
+PPG across all 42 subjects. The one real casualty is **subject24: named 96 bpm,
+PPG states 127.2**.
 
 DATASET_1's 62 Hz oximeter has no dropouts at all and reaches 148 bpm on
 `after-exercise`.
 
 **Two DATASET_1 videos are unlabelled.** Google Drive stripped the folder names
-from five DATASET_1 clips; three were equal to to their subject by duration, and
+from five DATASET_1 clips; three were matched to their subject by duration, and
 `6-gt` vs `12-gt` is an exact tie. Those two sit in
 `DATASET_1/_UNRESOLVED_6gt_or_12gt/` and must stay out of any split until a
-spectral HR estimate separates them -- their named HRs differ by 12 bpm. See
-`DATASET_1/_UNRESOLVED_NOTE.md`.
+spectral HR estimate separates them -- their named HRs differ by 12 bpm.
 
 The 40 source zips were deleted on 2026-08-24 after verifying all 45 zipped
-videos on disk exactly against the archive manifest. UBFC-rPPG is now
-local-only: the Drive folder was quota-blocked for over 24 h during the original
-download, so re-acquiring it is not quick.
+videos against the archive manifest. UBFC-rPPG is now local-only: the Drive
+folder was quota-blocked for over 24 h during the original download.
 
-### CLBP-300 (sample) -- signal present, far too small
+### MR-NIRP -- 44 sessions, ingested 2026-08-31
 
 | | |
 |---|---|
-| on disk | 1.6 GB, 5 clips |
-| labels | **SBP, DBP, HR** -- the only BP source with a pulse |
-| video | H.264 4K/1080p, 60 fps, ~49 Mbps |
-| audit | **3/5 pass (60%)**, 20% peakless |
+| on disk | 35 GB frame cache; ~245 GiB of source zips kept in `~/Downloads` |
+| sessions | **44**: 29 Car (10 subjects) + 15 Indoor (8 subjects), 117.9 min |
+| labels | contact PPG, epoch-timestamped, 32-60 Hz. No HR column, no BP. |
+| video | 640x640 16-bit Bayer PGM stills, ~30 fps. RGB only; NIR is not ingested. |
+| manifest | `build/clips_mrnirp.parquet` — **90.5 / 3.4 / 6.0** against a 90/3/7 request |
 
-Cardiac peaks within 3-8 bpm on three clips. The full set is 300 subjects behind a
-data use agreement; only the free 5-subject sample is here.
+`uv run python -m src.cli mrnirp` reads the nested zips and writes the same
+frame-cache artifacts the other corpora use, so MR-NIRP trains through the path
+UBFC does with nothing decoded at training time.
+
+**Drive split the download three ways, and each one loses sessions silently.**
+Paired inner archives give 18 Car sessions with both streams; matching the 23
+orphan `RGB-###.zip` archives on timestamps recovers 11 more; nine Indoor
+sessions arrived as top-level `Subject3_still_940-015.zip` bundles. The 12
+unmatched orphans have no PulseOX, so no label.
+
+Orphan attribution is by clock: `pulseOxTime` against zip mtimes, with the
+timezone offset **fitted** (-6 h, 92 votes to 37) because Car is October and
+Indoor the preceding February. Matches must be unique both ways; ambiguity is
+dropped. All 11 land within 1.0 s and imply 30.04-30.05 fps — neither of which
+the matcher looks at.
+
+Five things that had to be measured rather than assumed, each of which fails
+silently if guessed:
+
+- **Frame rate.** Indoor ships `CameraTimeLog*.txt`, one stamp per frame, exact.
+  Car ships none, so its rate comes from frames over pulse span — valid only
+  while both recordings cover the same window. `Subject6_still_940`'s oximeter
+  stopped 13.25 s early, giving 32.19 fps against a true 29.98, which would slide
+  the label 13 s by the end of the clip. Out-of-range rates fall back to nominal;
+  `fps_source` records which applied.
+- **Which stream is colour.** `Subject2_still_940` ships `cam_flea3_1/` and
+  `RGB/` and no NIR directory — and the folder named `RGB` holds the *mono*
+  frames (0.05% mosaic modulation against 29.67%). The stream is chosen by
+  measuring modulation; a session with none is skipped.
+- **The CFA pattern.** `BayerBG` on all 44, by green-parity and red-above-blue on
+  the face. The test is **R > B, not R > G > B**: Car is IR-lit, where green
+  outruns red on skin.
+- **Bit alignment.** 12-bit left-shifted into 16 (`maxval 65535`, low nibble
+  always zero). The other alignment reduced the same way yields a near-black clip.
+- **Dropouts.** Zero samples are discarded. No Car session has any; every Indoor
+  one does, worst 6.4%. Sessions above 20% dropout, a 2.0 s gap, or outside
+  30-220 bpm are rejected — none hit those. Verified: **0 of 44 cached traces
+  contain a zero**, HR spans 53.0-102.6 bpm.
+
+**The cached box is capped at 256 px.** Indoor boxes reach 707, and one 300-frame
+window would read 369 MB against the model's 14.7 MB input; capped, 59 MB. UBFC
+and Car are under the cap already.
+
+Indoor scored 0/6 on the pulse measurement taken when only 24 sessions were
+ingested (Car was 8/18); the tool has since been removed, so treat it as a weak
+prior, not a verdict.
+
+Cameras: NIR is a Grasshopper3 GS3-U3-41C6NIR (mono, MONO12); RGB a Blackfly
+BFLY-U3-23S6C (Sony IMX249, RAW12). Both crop 640x640 at even offsets, so the CFA
+phase survives.
+
+### CLBP-300 (sample) -- signal present, gone from disk
+
+Five clips, 1.6 GB, 3/5 pass. **No longer on disk** -- `datasets/clbp-300-sample/`
+is absent, so `build/clips.parquet` still lists five rows whose files do not
+exist. The reader in `src/datasets/clbp300.py` is retained and returns nothing.
+The full 300 subjects sit behind a data use agreement.
 
 ---
 
-## B. Has blood pressure, but the video is unusable
+## B. Video without a recoverable pulse
 
-### MCD-rPPG -- 249 GB, and 95.5% of it has no pulse
+### MCD-rPPG -- 249 GB, and 95.5% of it scored below chance
 
 | | |
 |---|---|
 | on disk | **128 GiB actual** (`du` states 249 GiB; see below) |
 | scale | 3600 recordings, 600 subjects, 180 h |
-| labels | SBP, DBP, HR, respiration, SpO2 -- complete, no nulls |
+| labels | HR, respiration, SpO2, and cuff SBP/DBP -- complete, no nulls |
 | video | **MPEG-4 Part 2 Simple Profile, 640x480, 0.12-0.39 bits/pixel** |
-| audit | **159/3600 pass (4.4%)**, 76.1% peakless |
+| pass rate | 159/3600 (4.4%), 76.1% peakless |
 
-4.4% is **below the ~12% chance rate**. Three cameras recording one subject
-simultaneously return three different heart rates (77.3, 42.2, 77.3 for a true 100),
-which no measurement of one heart can do.
+4.4% was below the ~12% chance rate. Three cameras recording one subject
+simultaneously returned three different heart rates (77.3, 42.2, 77.3 for a true
+100), which no measurement of one heart can do.
 
-Cause is not fully isolated. Contributing factors, in the order the evidence
+Cause was never fully isolated. Contributing factors, in the order the evidence
 supports them:
 
 - **Auto-exposure/auto-gain.** The worst clip swings 80 LSB (std 32) across 10 s
-  with the subject nearly still -- a cliff then a 4 s exponential recovery. A pulse
-  is 0.1-0.5 LSB. Note AGC appears in CLBP-300 too, so it does not separate the two
-  corpora on its own.
-- **Compression.** MPEG-4 SP at 0.12-0.39 bpp with 4:2:0 chroma is unfriendly to a
-  sub-percent, spatially smooth signal. A controlled bitrate search was undecided.
+  with the subject nearly still -- a cliff then a 4 s exponential recovery. A
+  pulse is 0.1-0.5 LSB.
+- **Compression.** MPEG-4 SP at 0.12-0.39 bpp with 4:2:0 chroma is unfriendly to
+  a sub-percent, spatially smooth signal. A controlled bitrate search was
+  undecided.
 
 **Still useful for:** 3.6 GB of real 12-lead ECG and 700 MB of contact PPG, both
-with real pulses -- a valid PPG-to-BP pretraining corpus. And appearance
--based correlates (age, adiposity) which is what the trained model actually latched
-onto.
+with real pulses -- a valid waveform pretraining corpus.
 
 **There is no 120 GB of duplication to reclaim, despite what `du` states.** The
 working tree and `.git/lfs/objects` already share extents through btrfs reflinks,
-so `du -sh` double-counts every video. Measured:
+so `du -sh` double-counts every video:
 
     $ btrfs filesystem du -s datasets/mcd_rppg
          Total   Exclusive  Set shared
      248.65GiB     6.80GiB   120.93GiB
 
-Actual consumption is 6.80 + 120.93 = ~128 GiB. `git lfs prune` retains all 3600
-objects because every one is referenced by the checkout, and `git lfs dedup`
-re-shares data that is already shared. Both are no-ops here.
+Actual consumption is ~128 GiB. `git lfs prune` retains all 3600 objects because
+every one is referenced by the checkout, and `git lfs dedup` re-shares data that
+is already shared. Both are no-ops here.
 
 ---
 
-## C. Has blood pressure, no camera
+## C. Waveforms without a camera
 
-Neither can serve the primary target, but both carry real waveforms.
+Neither can serve the primary target, but both carry real pulses and can
+pretrain a waveform head.
 
 | dataset | on disk | contents |
 |---|---|---|
-| **BIDMC** | 209 MB | 53 ICU records, 8 min each. Arterial BP **waveform** on 10 records, plus PPG, ECG, RR, SpO2 and two-annotator breath labels. |
-| **BUT PPG** | 282 MB | 3888 records, 50 subjects. One cuff reading per subject (`137/94`), ECG at 1 kHz with R-peak annotations, smartphone PPG. |
-
-BIDMC's continuous arterial line is the better of the two -- real beat-to-beat
-pressure rather than a single number.
+| **BIDMC** | 209 MB | 53 ICU records, 8 min each. PPG, ECG, RR, SpO2, arterial pressure waveform on 10 records, and two-annotator breath labels. |
+| **BUT PPG** | 282 MB | 3888 records, 50 subjects. ECG at 1 kHz with R-peak annotations, smartphone PPG. |
 
 ---
 
-## D. Has video, no blood pressure
+## D. Synthetic
 
-| dataset | on disk | why it is here |
-|---|---|---|
-| **SCAMPS** | 3.6 GB | 2800 synthetic clips (labels, `.mat` and `.csv` -- the same 20 signals twice) + 10 videos. PPG, ECG and breathing waveforms, plus pose and 13 action units. Official 2000/400/400 split. Synthetic, so useful for pretraining only. |
-| **MR-NIRP** | 2.8 GB | 1 of 15 indoor sessions: `Subject3_motion_940`, 1817 NIR + 1815 RGB 16-bit PGM frames, `pulseOx.mat` ground truth. RGB is raw Bayer with no given CFA pattern, so only the NIR stream is usable. `indoor/Subject1/` is an **empty stub** -- 0 files. Remaining sessions quota-blocked. |
+**SCAMPS** (3.6 GB). 2800 synthetic clips (labels as `.mat` and `.csv` -- the same
+20 signals twice) plus 10 videos. PPG, ECG and breathing waveforms, pose and 13
+action units. Official 2000/400/400 split. Synthetic, so pretraining only. No
+reader is wired up.
+
+---
+
+## E. Unusable here
+
+**Music / working-memory** (1.6 GB). No facial video -- only FaceReader
+*expression scores* derived from videos that were never distributed. Carries
+Empatica HR and IBI, Biopac ECG/EDA/EMG/RESP and 44-channel fNIRS, none of which
+this project can use.
 
 ---
 
-## E. Neither
+## Training on all three
 
-**Music / working-memory** (1.6 GB). No facial video -- only FaceReader *expression
-scores* derived from videos that were never distributed. Carries Empatica HR and
-IBI, Biopac ECG/EDA/EMG/RESP and 44-channel fNIRS, but nothing this project can use.
+`src.cli combine` pools UBFC, MR-NIRP and MCD into `build/clips_all.parquet` --
+**3692 clips, 666 subjects, 183.1 h** -- with one split assigned over the pooled
+table, grouped by subject and **stratified by source** so no corpus can be handed
+a whole side. Achieved **90.06 / 2.93 / 7.01** in segments. `train` defaults to
+this manifest and reads its split rather than deriving one.
 
----
+MCD is **98.45%** of those segments against MR-NIRP's 1.09% and UBFC's 0.46%, so
+an aggregate over any split is a measurement of MCD. Hence per-source reporting,
+and `--stride` to subsample.
 
 ## Summary
 
-| category | datasets | clips with a usable pulse |
+| category | corpora | subjects with usable video |
 |---|---|---|
-| A. video + pulse | UBFC-rPPG, CLBP-300 | **25 of 48 UBFC (52.1%)**; 3 of 5 CLBP-300 |
-| B. video + BP, no pulse | MCD-rPPG | 159 of 3600, likely mostly chance |
-| C. BP, no video | BIDMC, BUT PPG | n/a |
-| D. video, no BP | SCAMPS, MR-NIRP | n/a |
+| A. video + pulse | UBFC-rPPG, MR-NIRP | 50 UBFC, 18 MR-NIRP |
+| B. video, no recoverable pulse | MCD-rPPG | 600, none usable from pixels |
+| C. waveforms, no video | BIDMC, BUT PPG | n/a |
+| D. synthetic | SCAMPS | n/a |
 | E. unusable | music/working-memory | n/a |
 
-**Nothing on disk supports the original goal** -- facial video with blood pressure
-and a recoverable pulse -- at a scale that would train a model. CLBP-300 has all
-three for 3 clips.
-
-What changed on 2026-08-23: UBFC-rPPG went from 1 video to all 50, and the audit
-on 2026-08-24 put **25 of 48 clips (52.1%) above the pulse threshold** -- twelve
-times MCD-rPPG's rate and four times chance. That does not give the project blood
-pressure. It does give it a corpus where heart rate is really learnable, and a
-pulse-extraction trunk that a BP head could later sit on.
-
-The audit's own resolution is now the binding constraint, not the data. `nperseg`
-is limited at 256 samples, so the spectrum has 7.03 bpm bins against a 10 bpm
-tolerance, and lengthening the window does not help: 300 frames scores 52.1% and
-900 frames scores 50.0%, with peakless rising from 20.8% to 29.2% as the longer
-window allows more drift. A finer estimator would likely move the number; a longer
-one will not.
+UBFC remains the corpus the pipeline is built around. MR-NIRP adds **18 subjects
+and 117.9 min of video** with per-frame contact PPG, in conditions UBFC has none
+of: in-car, IR-illuminated, and with graded head motion.
 
 ## The process lesson
 
-Three training runs, ~10 GPU hours, all stabilised to predicting the training mean
-before the data was checked. The audit that resolves it takes 20 minutes and exists
-only because those runs failed.
+Three training runs, ~10 GPU hours, all stabilised to predicting the training
+mean before the data was checked.
 
-**Audit before acquiring, and certainly before training.** For a candidate dataset,
-download a handful of clips, build a manifest, run the audit. A pass rate near or
-below 12% means the corpus cannot support rPPG whatever its size or labels.
+**Look at the data before training on it.** On MR-NIRP an afternoon of checking
+turned up a wrong frame-rate assumption, an undocumented Bayer pattern, a 12-bit
+alignment that would have trained on black frames, a monochrome stream labelled
+`RGB`, and dropouts in every Indoor trace. None of them raises an exception.

@@ -2,12 +2,12 @@
 
     uv run python -m src.cli --help
 
-Build the clip manifest, eyeball the preprocessing, audit whether a corpus
-contains a recoverable pulse, then train and score CFMamba-Phys against it.
+Build the clip manifest, eyeball the preprocessing, then train and score
+CFMamba-Phys against it.
 
-Run `audit` before `train`, always. It answers whether the data can support the
-task at all, and it takes twenty minutes against the ten GPU-hours that preceded
-the first time anyone here ran it.
+Look at the data before training on it. `samples` renders contact sheets and
+`info` reports coverage and label spread. Ten GPU-hours went into three runs
+that stabilised to predicting the training mean before anyone did.
 """
 
 from __future__ import annotations
@@ -16,7 +16,11 @@ from pathlib import Path
 
 import click
 
-DEFAULT_MANIFEST = Path("build/clips.parquet")
+# What the consuming commands read: the pooled manifest `combine` writes, which
+# is also what `train` defaults to. `clips` and `remux` produce CLIPS_MANIFEST
+# instead -- they are upstream of the pool, not readers of it.
+DEFAULT_MANIFEST = Path("build/clips_all.parquet")
+CLIPS_MANIFEST = Path("build/clips.parquet")
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -26,17 +30,137 @@ def cli() -> None:
     \b
     Typical order:
       1. clips     build the manifest (face boxes + skin masks, once per recording)
-      2. audit     DOES THE VIDEO CONTAIN A PULSE? Run before training, always.
+      2. mrnirp    ingest MR-NIRP from its zips -- it ships stills, not video
       3. remux     rewrite MCD's container so seeking stops scanning from frame 0
-      4. cache     decode each face box once, so training reads 23 MB a window
-      5. samples   render contact sheets to eyeball the preprocessing
-      6. info      coverage, label spread and the split
-      7. check     shapes, parameter budget and throughput on this GPU
-      8. sanity    can the model recover a pulse it was given? synthetic
-      9. baseline  POS and CHROM on the test windows -- the floor to beat
-     10. train     fit, then score the last epoch against that floor
-     11. predict   run one video through a trained model and plot the pulse
+      4. combine   pool every corpus into one manifest with one split
+      5. cache     decode each face box once, so training reads 23 MB a window
+      6. samples   render contact sheets to eyeball the preprocessing
+      7. info      coverage, label spread and the split
+      8. check     shapes, parameter budget and throughput on this GPU
+      9. sanity    can the model recover a pulse it was given? synthetic
+     10. baseline  POS and CHROM on the test windows -- the floor to beat
+     11. train     fit every corpus for 50 epochs, then score against that floor
+     12. predict   run one video through a trained model and plot the pulse
+
+    Steps 1-5 are one-off. After them, `train` with no arguments is the run you
+    want: all three corpora, 90/3/7, 300-frame windows, 50 epochs, `--resume` to
+    continue an interrupted one.
     """
+
+
+@cli.command()
+@click.option("--out", type=click.Path(path_type=Path),
+              default=Path("build/clips_all.parquet"), show_default=True)
+@click.option("--seed", type=int, default=20260822, show_default=True)
+@click.option("--frames", type=int, default=300, show_default=True,
+              help="Window length the split is balanced in. Match --frames on train.")
+def combine(out: Path, seed: int, frames: int) -> None:
+    """Pool every corpus into one manifest with one split.
+
+    Each corpus is built by its own command and lands in its own file. This joins
+    them on a union schema, takes each corpus from exactly one file, and assigns
+    a single split over the pooled table -- **stratified by source**, so every
+    corpus reaches dev and test rather than a greedy fill handing one of them a
+    whole side.
+
+    MCD is 180 h against UBFC's 0.9 and MR-NIRP's 2.0, so it is ~98% of the
+    segments whatever the split does. Stratifying makes the other two present,
+    not significant; read the per-source breakdown `train` prints, and use
+    `--stride` there to subsample.
+    """
+    import polars as pl
+
+    from .aggregation.combine import build
+    from .aggregation.splits import summarise
+
+    tagged = build(seed=seed, n_frames=frames)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tagged.write_parquet(out)
+
+    total = int(tagged["n_segments"].sum())
+    click.echo(f"\n{tagged.height} clips, {tagged['subject_id'].n_unique()} subjects, "
+               f"{tagged['duration_s'].sum() / 3600:.1f} h, {total} segments -> {out}")
+    click.echo(summarise(tagged))
+    click.echo("\nsegments per split and source:")
+    click.echo(
+        tagged.group_by("split", "source")
+        .agg(pl.col("n_segments").sum().alias("segments"),
+             pl.col("subject_id").n_unique().alias("subjects"))
+        .with_columns((pl.col("segments") / total * 100).round(2).alias("pct_all"))
+        .sort("split", "source")
+    )
+
+
+@cli.command()
+@click.option("--downloads", type=click.Path(path_type=Path), default=None,
+              help="Where the MR-NIRP zips are. Defaults to ~/Downloads.")
+@click.option("--out", type=click.Path(path_type=Path),
+              default=Path("build/clips_mrnirp.parquet"), show_default=True,
+              help="Where to write the manifest, split column included.")
+@click.option("--cache-dir", type=click.Path(path_type=Path),
+              default=Path("build/frames_cache"), show_default=True,
+              help="Frame cache. The same one the other corpora use, on purpose.")
+@click.option("--limit", type=int, default=None,
+              help="Prepare only the first N sessions. Use 2 for a trial run.")
+@click.option("--workers", type=int, default=2, show_default=True,
+              help="Sessions prepared in parallel. Each holds its own ~1.2 GB "
+                   "SegFace copy on the GPU, so this trades against VRAM, not CPU.")
+@click.option("--force", is_flag=True, help="Rebuild sessions already cached.")
+@click.option("--seed", type=int, default=20260822, show_default=True)
+def mrnirp(downloads: Path | None, out: Path, cache_dir: Path, limit: int | None,
+           workers: int, force: bool, seed: int) -> None:
+    """Ingest MR-NIRP: nested zips of Bayer PGM stills -> the standard frame cache.
+
+    MR-NIRP ships no video, so this does in one pass what `clips` and `cache` do
+    for the other corpora, and writes the same artifacts. After it, MR-NIRP trains
+    through exactly the path UBFC does.
+
+    Only sessions holding BOTH an RGB stream and a pulse trace are usable: Google
+    Drive split the Car download by size and delivered the two halves in unrelated
+    archives, so 18 of 56 Car sessions survive that, plus all 6 Indoor.
+
+    The split is subject-level and persisted, unlike every other split here, so
+    the assignment cannot drift when the manifest grows. It packs largest subject
+    first (`order="size"`), because 3% of 15 subjects is under one person and the
+    default shuffled fill hands its first subjects to the smallest bins -- which
+    on this corpus returns 64/14/21 instead of 90/3/7. Quote the achieved ratios
+    it prints, not the requested ones.
+    """
+    import polars as pl
+
+    from .aggregation.splits import RATIOS_MRNIRP, assign, segment_counts, summarise
+    from .datasets import mrnirp as reader
+
+    built = reader.build(downloads=downloads, cache_dir=cache_dir, limit=limit,
+                         force=force, workers=workers)
+    if not built.height:
+        raise SystemExit("no sessions prepared")
+
+    tagged = assign(
+        built.with_columns(segment_counts(built).alias("n_segments")),
+        ratios=RATIOS_MRNIRP, seed=seed, weight="n_segments", order="size",
+        # Within each corpus, so Car and Indoor both reach dev and test. Ungated,
+        # the fill gave dev 2 Car clips and test 3 Indoor ones, and the test score
+        # then measured Indoor alone.
+        stratify="corpus",
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tagged.write_parquet(out)
+
+    print(f"\n{tagged.height} clips, {tagged['subject_id'].n_unique()} subjects, "
+          f"{tagged['duration_s'].sum() / 60:.1f} min -> {out}")
+    print(tagged.group_by("corpus").agg(pl.len().alias("clips"),
+                                        pl.col("subject_id").n_unique().alias("subjects")))
+    print("\nsplit, by clip and subject:")
+    print(summarise(tagged))
+    # The ratios were balanced in segments, so that is the table to read them
+    # off. `summarise`'s pct_rows above counts clips, which is a different number
+    # whenever clip lengths differ -- and here they differ by 4x.
+    print("achieved in segments, against requested "
+          + ", ".join(f"{k} {100 * v:.0f}%" for k, v in RATIOS_MRNIRP.items()) + ":")
+    print(tagged.group_by("split").agg(pl.col("n_segments").sum().alias("segments"))
+          .with_columns((pl.col("segments") / tagged["n_segments"].sum() * 100)
+                        .round(2).alias("pct_segments")).sort("split"))
 
 
 @cli.command()
@@ -45,7 +169,7 @@ def cli() -> None:
     help="Cap clips per dataset. Use a small number for a trial run; omit for all.",
 )
 @click.option(
-    "--output", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST,
+    "--output", type=click.Path(path_type=Path), default=CLIPS_MANIFEST,
     show_default=True, help="Where to write the clip manifest.",
 )
 def clips(limit: int | None, output: Path) -> None:
@@ -66,7 +190,7 @@ def clips(limit: int | None, output: Path) -> None:
 
 @cli.command()
 @click.option("--manifest", type=click.Path(exists=True, path_type=Path),
-              default=Path("build/clips.parquet"), show_default=True)
+              default=CLIPS_MANIFEST, show_default=True)
 @click.option("--out", type=click.Path(path_type=Path), default=None,
               help="Where to write. Defaults to build/mcd_remux.")
 @click.option("--source", default="mcd", show_default=True,
@@ -114,7 +238,7 @@ def remux(manifest: Path, out: Path | None, source: str, force: bool,
 @cli.command()
 @click.option(
     "--manifest", type=click.Path(exists=True, path_type=Path),
-    default=Path("build/clips_ubfc.parquet"), show_default=True,
+    default=DEFAULT_MANIFEST, show_default=True,
 )
 @click.option(
     "--out", type=click.Path(path_type=Path), default=None,
@@ -215,79 +339,12 @@ def info(manifest: Path) -> None:
 
 
 @cli.command()
-@click.option("--frames", type=int, default=300, show_default=True,
-              help="Frames per analysed window. 300 is 10 s at 30 fps.")
-@click.option("--workers", type=int, default=8, show_default=True)
-@click.option("--limit", type=int, default=None, help="Cap clips, for a quick look.")
-@click.option("--out", type=click.Path(path_type=Path), default=Path("build/audit.parquet"),
-              show_default=True)
-@click.option("--manifest", type=click.Path(exists=True, path_type=Path),
-              default=DEFAULT_MANIFEST, show_default=True)
-@click.option("--min-prominence", type=float, default=None,
-              help="Emit a filtered manifest keeping clips at or above this peak prominence.")
-@click.option("--max-lf-ratio", type=float, default=None,
-              help="With --min-prominence: also cap low-frequency drift (P(0.7Hz)/P(3.5Hz)).")
-@click.option("--clean-out", type=click.Path(path_type=Path),
-              default=Path("build/clips_clean.parquet"), show_default=True,
-              help="Where the filtered manifest goes.")
-def audit(frames: int, workers: int, limit: int | None, out: Path, manifest: Path,
-          min_prominence: float | None, max_lf_ratio: float | None,
-          clean_out: Path) -> None:
-    """Check which clips actually contain a recoverable pulse.
-
-    Lossy inter-frame compression removes rPPG: the signal is a ~0.1% smooth
-    brightness change, which a motion-compensated codec discards as imperceptible.
-    A clip whose spectrum fixes to the bottom of the cardiac band has no pulse at
-    all, only low-frequency drift, and no model can recover one.
-
-    Run this before training. It converts "the model underperformed" into "N% of
-    the data has no signal in it".
-    """
-    import polars as pl
-
-    from .model.audit import run, summarise
-
-    man = pl.read_parquet(manifest)
-    if limit:
-        man = man.head(limit)
-    click.echo(f"auditing {man.height} clips...")
-    results = run(man, n_frames=frames, workers=workers)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    results.write_parquet(out)
-    summarise(results, man)
-    click.echo(f"\nwrote {out}")
-
-    if min_prominence is not None:
-        # Selection uses only metrics computable from pixels: a peak must exist,
-        # stand clear of the noise floor, and not sit under runaway drift. The
-        # label is intentionally excluded -- picking clips where a simple estimator
-        # already agrees with the answer would make any later result circular.
-        keep = results.filter(
-            (~pl.col("band_edge")) & (pl.col("prominence") >= min_prominence)
-        )
-        if max_lf_ratio is not None:
-            keep = keep.filter(pl.col("lf_ratio") <= max_lf_ratio)
-        clean = man.join(keep.select("clip_id"), on="clip_id", how="inner")
-        clean.write_parquet(clean_out)
-        agree = keep.filter(pl.col("abs_err") <= 10).height
-        click.echo(
-            f"filtered: {clean.height} clips, {clean['subject_id'].n_unique()} subjects"
-            f"  -> {clean_out}"
-        )
-        click.echo(
-            f"  label agreement {100 * agree / max(keep.height, 1):.1f}% "
-            f"(chance ~12%; scored after selection, never used for it)"
-        )
-
-
-
-@cli.command()
-@click.option("--frames", type=int, default=160, show_default=True)
+@click.option("--frames", type=int, default=300, show_default=True)
 @click.option("--batch", type=int, default=4, show_default=True)
 @click.option("--steps", type=int, default=5, show_default=True,
               help="Real forward/backward/optimiser steps to time.")
 @click.option("--manifest", type=click.Path(exists=True, path_type=Path),
-              default=Path("build/clips_ubfc.parquet"), show_default=True)
+              default=DEFAULT_MANIFEST, show_default=True)
 def check(frames: int, batch: int, steps: int, manifest: Path) -> None:
     """Shapes, the published cost budget, and throughput on this card.
 
@@ -357,7 +414,7 @@ def check(frames: int, batch: int, steps: int, manifest: Path) -> None:
 @cli.command()
 @click.option("--steps", type=int, default=300, show_default=True,
               help="Optimiser steps. This is a sanity check, not a training run.")
-@click.option("--frames", type=int, default=160, show_default=True)
+@click.option("--frames", type=int, default=300, show_default=True)
 def sanity(steps: int, frames: int) -> None:
     """Can the model recover a pulse that is definitely in the pixels?
 
@@ -367,9 +424,9 @@ def sanity(steps: int, frames: int) -> None:
     the architecture or the loss and no amount of real data will fix it.
 
     This is the control that three earlier training runs on this project lacked.
-    Each stabilised to predicting a constant, and it took a data audit to work out
-    that the input brought nothing. On synthetic input that ambiguity is gone: the
-    signal is there by construction.
+    Each stabilised to predicting a constant, and it took a look at the data to
+    establish that the input brought nothing. On synthetic input that ambiguity
+    is gone: the signal is there by construction.
     """
     import math
 
@@ -441,8 +498,8 @@ def sanity(steps: int, frames: int) -> None:
 
 @cli.command()
 @click.option("--manifest", type=click.Path(exists=True, path_type=Path),
-              default=Path("build/clips_ubfc.parquet"), show_default=True)
-@click.option("--frames", type=int, default=160, show_default=True)
+              default=DEFAULT_MANIFEST, show_default=True)
+@click.option("--frames", type=int, default=300, show_default=True)
 @click.option("--workers", type=int, default=8, show_default=True)
 @click.option("--methods", default="pos,chrom", show_default=True)
 @click.option("--split", type=click.Choice(["test", "train", "all"]), default="test",
@@ -455,6 +512,7 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
     not beat them has not learned anything a decade-old algorithm does not already
     do.
     """
+    import polars as pl
     from torch.utils.data import DataLoader
 
     from .model.baselines import run as run_baselines
@@ -463,12 +521,16 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
         WindowDataset,
         expand_to_segments,
         load_manifest,
-        paper_split,
     )
     from .model.evaluate import format_metrics, summarise
 
     full = load_manifest(manifest)
-    part = full if split == "all" else paper_split(full)[split]
+    if split != "all" and "split" not in full.columns:
+        raise SystemExit(
+            f"{manifest} has no split column, so --split {split} has nothing to "
+            "select. Build one with `src.cli combine`, or pass --split all."
+        )
+    part = full if split == "all" else full.filter(pl.col("split") == split)
     segments = expand_to_segments(part, frames, TARGET_FPS)
     click.echo(f"{part.height} clips, {segments.height} segments of {frames} frames")
     loader = DataLoader(
@@ -481,7 +543,7 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
 
 
 @cli.command()
-@click.option("--epochs", type=int, default=30, show_default=True)
+@click.option("--epochs", type=int, default=50, show_default=True)
 @click.option("--lr", type=float, default=1e-3, show_default=True,
               help="AdamW's own default. Warmup then cosine decay to 1% of it.")
 @click.option("--weight-decay", type=float, default=0.05, show_default=True,
@@ -494,7 +556,7 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
               help="FreTS Eq. 7's activation inside the DF-FFN's complex linears. "
                    "'none' is the literal Section 3.3 reading, which is linear.")
 @click.option("--batch", type=int, default=4, show_default=True)
-@click.option("--frames", type=int, default=160, show_default=True)
+@click.option("--frames", type=int, default=300, show_default=True)
 @click.option("--workers", type=int, default=8, show_default=True)
 @click.option("--log-every", type=int, default=25, show_default=True,
               help="Steps between progress lines.")
@@ -521,11 +583,12 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
 @click.option("--direction", type=click.Choice(["none", "shared", "separate"]),
               default="none", show_default=True,
               help="Scan direction. 'shared' is bidirectional at no parameter cost.")
-@click.option("--protocol", type=click.Choice(["random", "paper"]), default="random",
+@click.option("--protocol", type=click.Choice(["manifest", "random"]),
+              default="manifest",
               show_default=True,
-              help="'random' is a subject-grouped 85/10/5 over every segment in the "
-                   "manifest. 'paper' is both source papers' UBFC split (first 30 "
-                   "subjects train, last 12 test), for comparability.")
+              help="'manifest' uses the split column the manifest carries, which "
+                   "is what `combine` writes. 'random' derives a subject-grouped "
+                   "85/10/5 instead, for a manifest that has no split column.")
 @click.option("--frame-norm", type=click.Choice(["standardized", "raw"]),
               default="standardized", show_default=True,
               help="Input scaling. 'standardized' matches the toolbox DATA_TYPE all "
@@ -536,8 +599,6 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
 @click.option("--stride", type=int, default=None,
               help="Segment stride in frames. Defaults to non-overlapping. Raise it "
                    "to subsample a large corpus.")
-@click.option("--no-dataset1", is_flag=True, default=False,
-              help="With --protocol paper, train on DATASET_2's 30 subjects only.")
 @click.option("--no-baselines", is_flag=True, default=False,
               help="Skip POS/CHROM. They take a few minutes and are the floor.")
 @click.option("--resume", is_flag=True, default=False,
@@ -548,7 +609,7 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
               help="Synchronise inside the training loop so the reported compute "
                    "time is compute rather than queue submission. Slows the run.")
 @click.option("--manifest", type=click.Path(exists=True, path_type=Path),
-              default=Path("build/clips_ubfc.parquet"), show_default=True)
+              default=Path("build/clips_all.parquet"), show_default=True)
 @click.option("--out", type=click.Path(path_type=Path),
               default=Path("build/runs/cfmamba"), show_default=True)
 def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
@@ -556,7 +617,7 @@ def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
           alpha: float, beta: float, no_hr_balance: bool, no_flip: bool,
           skin_mask: bool, stem: str, no_pga: bool, no_cam: bool, ffn: str,
           pts_mode: str, direction: str, protocol: str, frame_norm: str,
-          sources: str, stride: int | None, no_dataset1: bool, no_baselines: bool,
+          sources: str, stride: int | None, no_baselines: bool,
           resume: bool, profile: bool, manifest: Path, out: Path) -> None:
     """Fit CFMamba-Phys, then score the last epoch against POS and CHROM.
 
@@ -564,9 +625,6 @@ def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
     in the manifest, so no person appears on two sides. The ratios are in segments
     rather than clips because clip length varies four-fold here, and segments are
     what the model actually sees.
-
-    `--protocol paper` switches to both source papers' UBFC split instead, for
-    direct comparison with their tables.
 
     Dev is scored each epoch for the trajectory; test is scored once at the end.
     There is no checkpoint selection -- both papers report the last epoch, so the
@@ -590,7 +648,7 @@ def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
         use_pga=not no_pga, use_cam=not no_cam, ffn=ffn, pts_mode=pts_mode,
         direction=direction, protocol=protocol, frame_norm=frame_norm,
         sources=tuple(x.strip() for x in sources.split(",") if x.strip()),
-        stride_frames=stride, include_dataset1=not no_dataset1,
+        stride_frames=stride,
         baselines=not no_baselines, profile=profile, resume=resume, out_dir=out,
     )
     run_training(config, manifest)

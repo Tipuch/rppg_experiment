@@ -47,15 +47,16 @@ video -> ffmpeg decode at 30 fps, face box cropped inside the filter graph
 uv run python -m src.cli --help
 
 uv run python -m src.cli clips     # build the clip manifest: face boxes, skin masks
-uv run python -m src.cli audit     # measure whether clips contain a recoverable pulse
+uv run python -m src.cli mrnirp    # ingest MR-NIRP from its zips -- it ships stills
 uv run python -m src.cli remux     # rewrite MCD's container so seeking is O(1)
+uv run python -m src.cli combine   # pool every corpus into one manifest + split
 uv run python -m src.cli cache     # decode each face box once to a uint8 cache
 uv run python -m src.cli samples   # render contact sheets for visual review
 uv run python -m src.cli info      # coverage, label spread, split sizes
 uv run python -m src.cli check     # shapes, parameter budget, throughput
 uv run python -m src.cli sanity    # recover a synthetic pulse
 uv run python -m src.cli baseline  # POS and CHROM on the test windows
-uv run python -m src.cli train     # fit, then score the last epoch
+uv run python -m src.cli train     # fit all corpora, 50 epochs, then score
 uv run python -m src.cli predict   # run one video through a model, plot the pulse
 uv run python tools/plot_loss.py build/runs/<name>
 ```
@@ -72,8 +73,18 @@ forward from frame 0. The output stays AVI because MP4 and MKV drop three frames
 mid-stream on the 29.9167 fps clips, which shifts every subsequent frame and
 desynchronises the contact-PPG target from the video.
 
-`audit` reports the fraction of clips whose mean-skin-luma spectrum has a cardiac
-peak agreeing with the named heart rate. Chance agreement is approximately 12%.
+`combine` pools UBFC, MR-NIRP and MCD into `build/clips_all.parquet` with one
+90/3/7 split, grouped by subject and stratified by source so each corpus reaches
+dev and test. `train` with no arguments is the run you want: **all three corpora,
+50 epochs, 300-frame windows**, `--resume` to continue an interrupted one.
+
+MCD is 180 h against the other two's 2.9, so it is ~98% of the segments whatever
+the split does. Results are reported per source, and `--stride` subsamples it.
+
+`mrnirp` is a one-off ingest for the only corpus that ships stills rather than
+video: it reads the nested zips, demosaics the Bayer frames, finds the face box
+and writes the same cache artifacts `clips` and `cache` produce, so MR-NIRP then
+trains through the ordinary path. It also writes its own split, persisted.
 
 ## Loss
 
@@ -98,8 +109,9 @@ same construction.
 
 ## Results
 
-Full corpus, MCD-rPPG plus UBFC-rPPG, 6 epochs, 300-frame windows, batch 4,
-subject-grouped 85/10/5 split, last epoch reported.
+MCD-rPPG plus UBFC-rPPG, 6 epochs, 300-frame windows, batch 4, subject-grouped
+85/10/5, last epoch. Predates the pooled 90/3/7 split and MR-NIRP, so it is a
+record of that run rather than of the current default.
 
 | split | MAE | RMSE | rho | MACC | SNR | n |
 |---|---|---|---|---|---|---|
@@ -169,6 +181,6 @@ built and raises if more than 20% have flat targets.
 | | |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | each module, the equation it implements, and where the papers are silent or inconsistent |
-| [DATASETS.md](DATASETS.md) | what each corpus supports, and audit results |
+| [DATASETS.md](DATASETS.md) | what each corpus supports, and what was measured |
 | [AGGREGATION_PLAN.md](AGGREGATION_PLAN.md) | the original data plan |
 | [IMAGE_PIPELINE_PLAN.md](IMAGE_PIPELINE_PLAN.md) | skin isolation and brightness normalisation |

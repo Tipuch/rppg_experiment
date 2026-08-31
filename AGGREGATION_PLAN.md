@@ -1,43 +1,49 @@
 # Aggregation plan: unified rPPG table
 
 Target row schema, most to least important:
-facial images (ordered, one resolution) → HR → SBP → DBP → BR → HRV.
+facial images (ordered, one resolution) -> pulse waveform -> HR.
+
+> **Superseded in part, 2026-08-31.** Blood pressure was the original target and
+> is no longer in scope, so the SBP/DBP/BR/HRV columns this document was built
+> around are gone from the live schema. What survives is the per-corpus inventory
+> below and the granularity discussion in section 3, both still accurate. The
+> frame-store design in sections 4-6 was replaced by on-the-fly decoding plus a
+> face-box frame cache -- see `ARCHITECTURE.md`. Readers now live one module per
+> corpus in `src/datasets/`.
 
 ## 1. Verdict
 
-Aggregation is possible, but **no dataset we hold covers all six targets**. The union is
-sparse, and one gap is structural rather than a download problem: SBP/DBP exist in
-exactly one source, as a single scalar per video.
-
-Build the pipeline anyway. It is the slot that MCD-rPPG, VitalVideos and BP4D+ drop into
-when access clears. Do not expect to train a six-target model on today's data.
+Build the aggregation pipeline around the pulse waveform. It is the one target
+that more than one corpus carries per frame rather than per recording, and it is
+the only one whose label can be checked against the pixels.
 
 ## 2. What we actually hold
 
-| Source | Face frames | HR | SBP | DBP | BR | HRV |
-|---|---|---|---|---|---|---|
-| CLBP-300 (5 videos) | 2160x3840 + 1920x1080, 60 fps, ~32 s, H.264 | scalar/video | scalar/video | scalar/video | — | — |
-| SCAMPS (10 videos, 2800 label sets) | synthetic 320x240, 600 f @30 fps | derive | — | — | derive | derive |
-| UBFC-rPPG (1 video, 12 label files) | 640x480 @30 fps | trace @30 Hz | — | — | derive | — |
-| MR-NIRP (1 session) | NIR+RGB PGM, ~1817 frames | derive | — | — | derive | — |
-| MCD-rPPG (cloning, user-initiated) | multi-camera | yes | yes | yes | yes | derive |
+| Source | Face frames | Pulse waveform | HR |
+|---|---|---|---|
+| CLBP-300 (5 videos) | 2160x3840 + 1920x1080, 60 fps, ~32 s, H.264 | -- | scalar/video |
+| SCAMPS (10 videos, 2800 label sets) | synthetic 320x240, 600 f @30 fps | yes | derive |
+| UBFC-rPPG (50 videos) | 640x480 @~29 fps | trace @30 Hz | trace |
+| MR-NIRP (24 sessions) | Bayer PGM 640x640 @30 fps | trace @32-60 Hz | derive |
+| MCD-rPPG (3600 recordings) | multi-camera 640x480 | yes | yes |
 
-"derive" = computable from a waveform in the source. "—" = absent.
+"derive" = computable from a waveform in the source. "--" = absent.
 
 Label formats confirmed by inspection:
-- CLBP-300: labels encoded in filename and spec sheet. `Subject001_M44_138_99_66_448.mov`
-  = sex, age, SBP 138, DBP 99, HR 66, ambient lux.
+- CLBP-300: labels encoded in filename. `Subject001_M44_138_99_66_448.mov`.
 - SCAMPS `.mat` (HDF5): `RawFrames (3,320,240,600)`, `Xsub (3,240,240,600)`,
   `d_ppg`, `d_ekg`, `d_br` each `(600,1)`, plus pose and 13 AUs.
-- UBFC DATASET_2 `ground_truth.txt`: 3 rows x N — PPG wave, HR bpm, timestamps (~30 Hz).
-- UBFC DATASET_1 `gtdump.xmp`: 4 cols — time ms, HR bpm, SpO2 %, PPG (~62 Hz).
-- MR-NIRP: `NIR/`+`RGB/` PGM sequences, `PulseOX/pulseOx.mat`.
+- UBFC DATASET_2 `ground_truth.txt`: 3 rows x N -- PPG wave, HR bpm, timestamps (~30 Hz).
+- UBFC DATASET_1 `gtdump.xmp`: 4 cols -- time ms, HR bpm, SpO2 %, PPG (~62 Hz).
+- MR-NIRP: `RGB/` PGM sequence, `PulseOX/pulseOx.mat` holding `pulseOxRecord`
+  (waveform) and `pulseOxTime` (epoch seconds, irregular 32-60 Hz).
+- MCD-rPPG: `ppg_sync/<name>.txt`, one sample per video frame.
 
 ## 3. The three problems to decide before writing code
 
 ### 3.1 Label granularity is not uniform — this is the main risk
 
-CLBP-300 gives one (SBP, DBP, HR) triple per 32 s video. SCAMPS/UBFC/MR-NIRP give
+CLBP-300 gives one HR scalar per 32 s video. SCAMPS/UBFC/MR-NIRP give
 per-frame waveforms. These cannot share a row unit without an explicit decision.
 
 Use a **fixed 10 s window as the row unit**. Broadcast per-video scalars across that
@@ -79,7 +85,7 @@ Nyquist becomes 15 Hz, still far above any credible HR.
 **Modality.** MR-NIRP NIR is single-channel. Keep `modality = rgb | nir` and do not stack
 NIR into an RGB tensor invisibly.
 
-**Units.** HR bpm, SBP mmHg, DBP mmHg, BR breaths/min, HRV ms.
+**Units.** HR bpm. The waveform itself is standardised per window, since absolute PPG amplitude is a property of the sensor.
 
 **Derivations.**
 - HR from PPG: bandpass 0.7–3.5 Hz, Welch PSD, dominant peak x 60.
@@ -106,8 +112,8 @@ frames_offset     u32
 modality          enum    # rgb | nir
 frame_h, frame_w  u16     # 128, 128
 hr_bpm            f32?
-sbp_mmhg          f32?
-dbp_mmhg          f32?
+sbp_mmhg          f32?   retained, nullable, never read
+dbp_mmhg          f32?   retained, nullable, never read
 br_bpm            f32?
 hrv_sdnn_ms       f32?
 hrv_rmssd_ms      f32?
@@ -127,8 +133,8 @@ All six targets nullable. Sparsity is the expected state, not a fault.
    detection needed (`Xsub` is already a 240x240 crop).
 2. **Signal derivation** → HR/BR per window, HRV per clip.
 3. **Manifest assembly** in Polars → one `dataset.parquet`.
-4. **Validation gate** — assert unit ranges (HR 30–220, SBP 70–200, DBP 40–130,
-   BR 4–40, SDNN 5–300), null audit per source, and confirm no `subject_id` appears in
+4. **Validation gate** — assert unit ranges (HR 30–220,
+   null counts per source, and confirm no `subject_id` appears in
    two splits.
 5. **Splits** grouped by `subject_id`. Never split within a subject — windows from one
    video are near-duplicates.
@@ -137,7 +143,7 @@ All six targets nullable. Sparsity is the expected state, not a fault.
 
 Rows with all six targets: **zero**, until MCD-rPPG or VitalVideos lands.
 Rows with images+HR: SCAMPS, UBFC, MR-NIRP, CLBP-300.
-Rows with images+SBP+DBP: CLBP-300 only, 5 videos, broadcast scalars.
+Rows with images + a per-frame pulse waveform: UBFC (50) and MR-NIRP (24).
 Rows with images+BR: SCAMPS only, synthetic.
 
 The pipeline is worth building now. The training set is not there yet.
@@ -155,18 +161,17 @@ The current pipeline is:
 
     src/model/clips.py     clip-level manifest: face box + skin mask, once per clip
     src/model/dataset.py   decodes windows on the fly, nothing materialised
-    src/model/audit.py     spectral check -- does the video contain a pulse
     src/model/train.py     training, subject-grouped splits, baselines
-    src/cli.py             clips / samples / info / check / train / diagnose / audit
+    src/cli.py             mrnirp / clips / samples / info / check / train / predict
 
 See **ARCHITECTURE.md** for the model and **DATASETS.md** for what each source can
 be used for.
 
 ## What this plan got right, and kept
 
-- **Subject-grouped 85/10/5 splits.** Windows of one recording share a single
-  clinical BP reading, so a row-level split hands the test labels to training.
-  Enforced by the validation gate.
+- **Subject-grouped splits.** Windows of one recording are near-duplicates, so a
+  row-level split scores the model on people it trained on. Now 90/3/7 over the
+  pooled manifest, stratified by source.
 - **Predict-the-training-mean baselines** printed alongside every score. Three runs
   produced dev MAEs that looked reasonable until compared against a constant
   predictor -- which they equal to.
@@ -188,7 +193,7 @@ be used for.
   a common timebase makes a frame count mean the same span everywhere. Currently
   **30 fps for every source**, since a fixed frame count otherwise spanned 2.7-6.7 s
   depending on the camera.
-- **Auditing the data last instead of first.** Three training runs and ~10 GPU hours
+- **Looking at the data last instead of first.** Three training runs and ~10 GPU hours
   preceded the 20-minute check that explained all of them.
 
 ## Findings that outlived the plan

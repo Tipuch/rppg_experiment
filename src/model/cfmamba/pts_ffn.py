@@ -58,7 +58,7 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         hidden: int,
         fps: float = 30.0,
         mode: str = "channel",
-        n_frames: int = 160,
+        n_frames: int = 300,
         n_bins: int = 64,
         activation: str | None = "gelu",
     ) -> None:

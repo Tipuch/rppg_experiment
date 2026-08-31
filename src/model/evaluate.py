@@ -166,7 +166,7 @@ def per_source(rows: list[dict]) -> list[tuple[str, dict[str, float]]]:
     Under a straight 85/10/5 over everything on disk, MCD-rPPG contributes 5979 of
     the 6027 test segments and UBFC-rPPG contributes 48 -- 0.8%. An aggregate over
     that is a measurement of MCD wearing a label that states "test", and MCD is the
-    corpus whose video the audit puts below chance for a recoverable pulse
+    corpus whose video measured below chance for a recoverable pulse
     (DATASETS.md). Reporting the split by source is what keeps the two questions --
     "did it learn a pulse" and "did it learn MCD's population statistics" --
     separate.

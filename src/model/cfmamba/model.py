@@ -37,9 +37,19 @@ from .mamba_layer import (
 from .pga import PhysiologyGuidedAttention
 from .vanilla_ffn import VanillaFFN
 
-# Section 4.1 / 4.5: 160-frame segments at 128x128, 30 Hz. RhythmFormer's Table 11
-# measures 160 as the optimum (3.07 MAE against 3.53 at 80 and 3.86 at 320).
-DEFAULT_N_FRAMES = 160
+# Section 4.1 / 4.5: 128x128 at 30 Hz. 300 frames is a 10 s window.
+#
+# This is a deliberate departure from both papers, which use 160-frame segments,
+# and from RhythmFormer's Table 11, which measures 160 as the optimum (3.07 MAE
+# against 3.53 at 80 and 3.86 at 320). Numbers produced at 300 are therefore not
+# directly comparable with the published ones. The published UBFC protocol has
+# been removed with it: it only understands UBFC's subjectN ids, and on the
+# pooled manifest `combine` writes it silently put 606 of 666 subjects in train.
+#
+# What 300 buys: the FFT bin spacing halves, from 11.25 bpm at 160 to 6.0 bpm at
+# 300, so a rate read off a window is resolved twice as finely before any
+# zero-padding interpolates it.
+DEFAULT_N_FRAMES = 300
 DEFAULT_RESOLUTION = 128
 DEFAULT_FPS = 30.0
 

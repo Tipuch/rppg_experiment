@@ -1,4 +1,4 @@
-"""Signal derivation: the estimators the whole audit depends on."""
+"""Signal derivation: the spectral estimators HR and BR are read with."""
 
 from __future__ import annotations
 

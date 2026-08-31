@@ -33,7 +33,7 @@ class DualFrequencyFFN(nn.Module):
         hidden: int,
         fps: float = 30.0,
         pts_mode: str = "channel",
-        n_frames: int = 160,
+        n_frames: int = 300,
         pts_bins: int = 64,
         activation: str | None = "gelu",
     ) -> None:

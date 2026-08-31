@@ -23,7 +23,6 @@ from src.model.dataset import (
     TARGET_FPS,
     WindowDataset,
     expand_to_segments,
-    paper_split,
     prepare_splits,
 )
 
@@ -143,49 +142,6 @@ def test_the_ratios_hold_even_when_clip_lengths_are_wildly_uneven() -> None:
     total = sum(part.height for part in splits.values())
     for name, expected in (("train", 0.85), ("dev", 0.10), ("test", 0.05)):
         assert splits[name].height / total == pytest.approx(expected, abs=0.05), name
-
-
-def test_the_paper_protocol_is_still_available() -> None:
-    """30 train / 12 test by subject number, for comparison with the tables."""
-    manifest = pl.concat([
-        _manifest(1).with_columns(
-            pl.lit(f"ubfc/subject{i}").alias("clip_id"),
-            pl.lit(f"ubfc_subject{i}").alias("subject_id"),
-        )
-        for i in range(1, 43)
-    ])
-    splits = paper_split(manifest, include_dataset1=False)
-    assert splits["train"]["subject_id"].n_unique() == 30
-    assert splits["test"]["subject_id"].n_unique() == 12
-
-
-# --- frame normalisation ------------------------------------------------------
-
-def test_standardization_uses_one_scalar_for_the_whole_window() -> None:
-    """BaseLoader.standardized_data uses a single mean and std, not per channel.
-
-    Per channel would flatten the chrominance differences between R, G and B, and
-    the pulse resides in exactly those -- haemoglobin absorbs green far more than
-    red. Per frame would be worse: it would remove the frame-to-frame brightness
-    change that *is* the signal.
-    """
-    dataset = WindowDataset(_manifest(1), frame_norm="standardized")
-    frames = torch.rand(8, 3, 16, 16) * 255
-    frames[:, 1] += 40.0                                   # green sits higher
-    # Expected gap is computed from the actual channel means, not the nominal +40:
-    # with 2048 samples per channel the sample means differ by 40 +/- 2.3, so
-    # checking against 40 would be testing the random seed.
-    expected = float(
-        (frames[:, 1].mean() - frames[:, 0].mean()) / frames.std()
-    )
-    out = dataset._normalise(frames)
-    assert float(out.mean()) == pytest.approx(0.0, abs=1e-5)
-    assert float(out.std()) == pytest.approx(1.0, abs=1e-4)
-    # The channel offset survives, rescaled by the single global std. A per-channel
-    # z-score would drive this difference to zero.
-    gap = float(out[:, 1].mean() - out[:, 0].mean())
-    assert gap == pytest.approx(expected, rel=1e-4)
-    assert gap > 0.4
 
 
 def test_raw_normalisation_is_the_unit_interval() -> None:

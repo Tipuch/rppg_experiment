@@ -12,11 +12,14 @@
 # Obtain both from their original sources; DATASETS.md records where.
 # ---------------------------------------------------------------------------
 
-# Data and derived artefacts
-datasets/
-build/
-models/
-research/
+# Data and derived artefacts. Anchored with a leading slash so they match only
+# the top-level directories: an unanchored `datasets/` also matches the source
+# package `src/datasets/`, which silently kept every corpus reader out of the
+# repository.
+/datasets/
+/build/
+/models/
+/research/
 
 # Vendored third-party checkouts, each with its own .git. tools/*.py is ours
 # and is tracked.

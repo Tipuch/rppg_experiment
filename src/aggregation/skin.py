@@ -44,11 +44,26 @@ MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 _MODEL: SegFaceCeleb | None = None
+# Where the cached model actually is. Returned instead of the requested device,
+# because the two diverge: once `segment` has fallen back to CPU, a later call
+# with no argument would otherwise be told "cuda" and move its input there, onto
+# weights that are not.
+_DEVICE: str | None = None
 
 
 def load_model(device: str | None = None) -> tuple[SegFaceCeleb, str]:
-    """Load SegFace once and keep it. Weights are ~MIT-licensed swinb_celeba_256."""
-    global _MODEL
+    """Load SegFace once and keep it. Weights are ~MIT-licensed swinb_celeba_256.
+
+    `device` moves the cached model when it is already loaded, so the fallback in
+    `segment` costs a transfer rather than a reload from disk -- and moving it off
+    the GPU is what frees the memory that made the fallback necessary.
+    """
+    global _MODEL, _DEVICE
+    if _MODEL is not None:
+        if device is not None and device != _DEVICE:
+            _MODEL.to(device)
+            _DEVICE = device
+        return _MODEL, _DEVICE
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     if _MODEL is None:
         model = SegFaceCeleb(INPUT_RES, "swin_base")
@@ -71,14 +86,40 @@ def load_model(device: str | None = None) -> tuple[SegFaceCeleb, str]:
         if len(missing) > 20:
             raise RuntimeError(f"SegFace weights did not fit: {len(missing)} missing")
         model.eval().to(dev)
-        _MODEL = model
-    return _MODEL, dev
+        _MODEL, _DEVICE = model, dev
+    return _MODEL, _DEVICE
 
 
 @torch.no_grad()
 def segment(frames_rgb: np.ndarray, batch: int = 8) -> np.ndarray:
-    """Per-frame class maps for (T, 256, 256, 3) uint8 RGB -> (T, 256, 256) int."""
-    model, dev = load_model()
+    """Per-frame class maps for (T, 256, 256, 3) uint8 RGB -> (T, 256, 256) int.
+
+    Falls back to CPU if CUDA has no room. The model is ~1.2 GB resident, so
+    several ingest workers on one card can exhaust it -- and the caller's failure
+    mode is a clip quietly dropped from the manifest, which is worse than a slow
+    one. Retrying on CPU costs seconds per clip and keeps the corpus whole.
+    """
+    try:
+        return _segment_on(load_model(), frames_rgb, batch)
+    except Exception as exc:
+        # A card that is out of room reports this two different ways: as
+        # torch.OutOfMemoryError from the allocator, and as AcceleratorError
+        # ("CUDA error: out of memory") when the driver refuses the context.
+        # Matching the message covers both without pinning a torch version.
+        if "out of memory" not in str(exc).lower():
+            raise
+        loaded = load_model("cpu")         # moves the weights off the full card
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("  SegFace: CUDA out of memory, using CPU from here on")
+        return _segment_on(loaded, frames_rgb, batch)
+
+
+@torch.no_grad()
+def _segment_on(
+    loaded: tuple[SegFaceCeleb, str], frames_rgb: np.ndarray, batch: int
+) -> np.ndarray:
+    model, dev = loaded
     out = np.empty(frames_rgb.shape[:3], dtype=np.uint8)
     for i in range(0, len(frames_rgb), batch):
         chunk = frames_rgb[i : i + batch].astype(np.float32) / 255.0

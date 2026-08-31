@@ -17,8 +17,7 @@ mean_Y branch, which no longer exists -- keeping the flag would remove the signa
 from the pixels and then discard it. `frame_diff` fed normalised frame differences
 instead of frames; CFMamba-Phys's Fusion Stem computes its own four differences
 internally and needs the raw frames alongside them, so pre-differencing would
-delete the raw branch's input. `compute_mean_y` stays, because the audit reads the
-mean skin luma trace directly.
+delete the raw branch's input.
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ AUG_FRACTION = 224 / 256
 # specify 128x128.
 MODEL_RES = 128
 
-DEFAULT_CLIP_FRAMES = 160
+DEFAULT_CLIP_FRAMES = 300
 # Heart rate only. Blood pressure is out of scope: CFMamba-Phys predicts a
 # waveform and reads no scalar target at all, and nothing on disk pairs facial
 # video with blood pressure and a recoverable pulse (see DATASETS.md). The
@@ -124,7 +123,6 @@ class WindowDataset(Dataset):
         frame_norm: str = "standardized",
         hr_balance: bool = True,
         flip: bool = True,
-        compute_mean_y: bool = False,
         return_waveform: bool = True,
         cache_dir: Path | None = framecache.CACHE_DIR,
     ) -> None:
@@ -147,9 +145,6 @@ class WindowDataset(Dataset):
         self.frame_norm = frame_norm
         self.hr_balance = hr_balance
         self.flip = flip
-        # The audit needs the mean skin luma trace; training does not, and it is a
-        # per-frame colour projection, so skipping it speeds the loader up.
-        self.compute_mean_y = compute_mean_y
         self.return_waveform = return_waveform
         # Where src/model/framecache.py put the decoded face boxes. A clip with no
         # entry there falls back to ffmpeg, so MCD and any corpus that was never
@@ -505,18 +500,6 @@ class WindowDataset(Dataset):
 
         frames, mask = self._maybe_flip(frames, mask, rng)
 
-        mean_y = np.zeros(len(frames), dtype=np.float32)
-        if self.compute_mean_y:
-            # BT.601 luma in float. cv2.cvtColor on a uint8 image returns a uint8 Y,
-            # quantising every pixel before the mean is taken over them.
-            #
-            # Gathered before the matmul, not after: only masked pixels reach the
-            # mean, so projecting the whole frame computes ~3x more luma than is
-            # used and materialises an intermediate to throw away.
-            inside = mask > 0.5
-            if inside.any():
-                mean_y = (frames[:, inside] @ BT601).mean(axis=1).astype(np.float32)
-
         if self.apply_skin_mask:
             frames = frames * mask[None, :, :, None]
 
@@ -529,13 +512,11 @@ class WindowDataset(Dataset):
         if len(frames) < self.n_frames:
             pad = self.n_frames - len(frames)
             frames = np.concatenate([frames, np.repeat(frames[-1:], pad, axis=0)])
-            mean_y = np.concatenate([mean_y, np.repeat(mean_y[-1:], pad)])
 
         tensor = torch.from_numpy(np.ascontiguousarray(frames)).permute(0, 3, 1, 2).float()
         item = {
             "frames": self._normalise(tensor),
             "skin": torch.from_numpy(np.ascontiguousarray(mask)).float(),
-            "mean_y": torch.from_numpy(mean_y),
             # A missing label becomes nan rather than raising: UBFC-rPPG has no
             # blood pressure, and a waveform model never reads these anyway.
             "targets": torch.tensor(
@@ -607,82 +588,36 @@ def expand_to_segments(
 ) -> pl.DataFrame:
     """One row per fixed-length segment, rather than one row per recording.
 
-    Both source papers divide each video into 160-frame segments and score every
-    one of them. Without this, an evaluation pass sees a single centred window per
-    clip -- twelve windows for the paper's twelve test subjects -- and the reported
-    MAE is then an average over twelve numbers, which is not a measurement.
+    Both source papers divide each video into fixed-length segments and score
+    every one of them. Without this, an evaluation pass sees a single centred
+    window per clip -- twelve windows for the paper's twelve test subjects -- and
+    the reported MAE is then an average over twelve numbers, which is not a
+    measurement.
 
-    A clip shorter than one segment still contributes one row; `WindowDataset` pads
-    the tail by repeating the last frame rather than dropping it.
+    A clip shorter than one segment still contributes one row; `WindowDataset`
+    pads the tail by repeating the last frame rather than dropping it.
+
+    Done in polars rather than by building dicts, for two reasons beyond speed.
+    Rebuilding a frame from `to_dicts()` **re-infers the schema from the first 100
+    rows**, so a column that is null across those rows becomes dtype Null and the
+    first real value later in the frame fails to append -- which is exactly what a
+    pooled manifest looks like, since MR-NIRP's columns are null on every MCD row
+    and MCD sorts first. And the count comes from `segment_counts`, the same
+    expression the splitter weights by, so the two cannot drift apart.
     """
-    span = n_frames / fps
+    from ..aggregation.splits import segment_counts
+
     stride = (stride_frames if stride_frames is not None else n_frames) / fps
-    rows: list[dict] = []
-    for row in manifest.to_dicts():
-        duration = float(row["duration_s"])
-        starts = [0.0]
-        if duration > span:
-            # The epsilon is not cosmetic. A clip whose duration is an exact
-            # multiple of the span -- mcd/8679_IriunWebcam_after is exactly 160.0 s
-            # -- lands on a floating-point boundary where (duration - span) / stride
-            # evaluates to 28.999999 instead of 29.0, and the floor invisibly drops a
-            # whole segment. One clip in 3648, and the kind of off-by-one that is
-            # cheaper to remove than to remember.
-            count = int((duration - span) / stride + 1e-9) + 1
-            starts = [i * stride for i in range(count)]
-        for start in starts:
-            rows.append({**row, "window_start_s": float(start)})
-    return pl.DataFrame(rows)
-
-
-# DATASET_2's subject ids sort lexically as subject1, subject10, subject11 -- so a
-# plain sort puts subject10 second and the paper's "initial 30 samples" would be
-# the wrong thirty people.
-def _subject_number(subject_id: str) -> int | None:
-    tail = subject_id.rsplit("subject", 1)
-    if len(tail) != 2 or not tail[1].isdigit():
-        return None
-    return int(tail[1])
-
-
-def paper_split(
-    manifest: pl.DataFrame, train_subjects: int = 30, include_dataset1: bool = True
-) -> dict[str, pl.DataFrame]:
-    """UBFC-rPPG as both source papers split it: first 30 subjects train, rest test.
-
-    "selecting the initial 30 samples as the training set and the remaining 12 as
-    the testing set" (RhythmMamba 4.3, RhythmFormer 4.4, CFMamba 4.3). That is
-    DATASET_2's 42 subjects ordered by subject number, which is why the ordering
-    helper above exists.
-
-    DATASET_1's six recordings have no place in that protocol -- they are not among
-    the 42 -- so they go to **train** only. Keeping them out of test preserves
-    comparability with every published number; keeping them in train uses the data
-    that is on disk. They include the corpus's only post-exercise recording at 108
-    bpm, which is exactly the part of the range UBFC is otherwise short of.
-
-    There is no validation split, intentionally: neither paper has one, and both
-    report the last epoch. Inventing one here would make the numbers incomparable
-    and would tempt checkpoint selection on twelve subjects.
-    """
-    numbered = [
-        (n, s) for s in manifest["subject_id"].unique().to_list()
-        if (n := _subject_number(s)) is not None
-    ]
-    ordered = [s for _, s in sorted(numbered)]
-    if len(ordered) < train_subjects:
-        raise ValueError(
-            f"only {len(ordered)} numbered subjects in the manifest, need at least "
-            f"{train_subjects} for the published split"
+    return (
+        manifest.with_columns(
+            segment_counts(manifest, n_frames, fps, stride_frames).alias("_segments")
         )
-    train_ids = set(ordered[:train_subjects])
-    test_ids = set(ordered[train_subjects:])
-    if include_dataset1:
-        train_ids |= {
-            s for s in manifest["subject_id"].unique().to_list()
-            if _subject_number(s) is None
-        }
-    return {
-        "train": manifest.filter(pl.col("subject_id").is_in(train_ids)),
-        "test": manifest.filter(pl.col("subject_id").is_in(test_ids)),
-    }
+        .with_columns(
+            window_start_s=pl.int_ranges(0, pl.col("_segments")) * stride
+        )
+        .explode("window_start_s")
+        .with_columns(pl.col("window_start_s").cast(pl.Float64))
+        .drop("_segments")
+    )
+
+

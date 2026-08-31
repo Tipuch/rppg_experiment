@@ -41,7 +41,6 @@ from .dataset import (
     WindowDataset,
     expand_to_segments,
     load_manifest,
-    paper_split,
     prepare_splits,
 )
 from .evaluate import evaluate, format_metrics, per_source, per_subject, summarise
@@ -58,7 +57,7 @@ class TrainConfig:
     # states an optimiser setting, so these are AdamW's own defaults where it has
     # them (lr, betas, eps) and the ViT/MambaVision-class convention where it does
     # not (weight decay 0.05, cosine decay with a linear warmup). See _optimiser.
-    epochs: int = 30
+    epochs: int = 50
     lr: float = 1e-3
     betas: tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-8
@@ -102,14 +101,15 @@ class TrainConfig:
     # "paper" is both source papers' UBFC split, for comparability. "random" is a
     # subject-grouped 85/10/5 over every segment in the manifest, which is what to
     # use when the manifest is more than UBFC.
-    protocol: str = "random"
+    # Matches the CLI. The pooled manifest carries its own split, and
+    # re-deriving one here would silently train on a different partition.
+    protocol: str = "manifest"
     # Cap the per-epoch dev pass. Dev is 11,984 segments on the full corpus, so
     # scoring all of it every epoch costs as much as the training does -- and the
     # trajectory does not need that precision, it needs to be visible. The full dev
     # and test splits are scored once at the end, unlimited.
     dev_eval_segments: int = 1500
     frame_norm: str = "standardized"
-    include_dataset1: bool = True
     sources: tuple[str, ...] = ()          # empty means every source with a waveform
     stride_frames: int | None = None        # None means non-overlapping segments
     baselines: bool = True
@@ -410,14 +410,34 @@ def build_splits(cfg: TrainConfig, manifest_path: Path) -> dict[str, pl.DataFram
     if manifest.height == 0:
         raise ValueError(f"no clips left after filtering to sources {keep}")
 
-    if cfg.protocol == "paper":
-        clips = paper_split(manifest, include_dataset1=cfg.include_dataset1)
+    if cfg.protocol == "manifest":
+        # The split the manifest already carries, rather than one derived here.
+        # `src.cli mrnirp` balances MR-NIRP in segments, stratifies it by corpus
+        # and persists the result, precisely so the assignment cannot move when
+        # the manifest grows -- re-deriving it here would discard all of that and
+        # silently train on a different partition.
+        if "split" not in manifest.columns:
+            raise ValueError(
+                f"--protocol manifest needs a `split` column; {manifest_path} has "
+                f"none. Build one with `src.cli mrnirp`, or use --protocol random."
+            )
+        missing = [n for n in ("train", "dev", "test")
+                   if manifest.filter(pl.col("split") == n).height == 0]
+        if missing:
+            raise ValueError(f"manifest split is missing {', '.join(missing)}")
+        # Expanded after partitioning, as with `paper`: the persisted split was
+        # already balanced in segments, so re-balancing would undo it.
         return {
-            name: expand_to_segments(part, cfg.n_frames, TARGET_FPS, cfg.stride_frames)
-            for name, part in clips.items()
+            name: expand_to_segments(
+                manifest.filter(pl.col("split") == name),
+                cfg.n_frames, TARGET_FPS, cfg.stride_frames,
+            )
+            for name in ("train", "dev", "test")
         }
     if cfg.protocol != "random":
-        raise ValueError(f"unknown protocol {cfg.protocol!r}, expected paper or random")
+        raise ValueError(
+            f"unknown protocol {cfg.protocol!r}, expected manifest or random"
+        )
     return prepare_splits(
         manifest, n_frames=cfg.n_frames, fps=TARGET_FPS, seed=cfg.seed,
         stride_frames=cfg.stride_frames,

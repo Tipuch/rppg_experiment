@@ -33,7 +33,7 @@ is read off the waveform afterwards by band-pass and periodogram.
 | depth | 4 |
 | stem width | 16 |
 | DF-FFN latent | 160 |
-| clip | 160 frames = 5.33 s at 30 fps |
+| clip | 300 frames = 10.0 s at 30 fps (the papers use 160; see below) |
 | input | 128 x 128 |
 
 ---
@@ -474,6 +474,13 @@ are straightforwardly better -- Haar Cascade falls back to the *whole frame* whe
 it fails, and a first-frame box is exactly why RhythmFormer's Table 11 caps input
 at 160 frames ("subsequent frames may lose the face due to motion").
 
+**This project trains at 300 frames, not 160.** A deliberate departure: it halves
+the FFT bin spacing, from 11.25 bpm to 6.0 bpm. It also means numbers produced
+here are not directly comparable with the published ones, and RhythmFormer's
+Table 11 measures 160 as the better length (3.07 MAE against 3.86 at 320). The
+band mask is unaffected -- it is parameterised in Hz precisely so that changing T
+cannot move it.
+
 The crop size was the open question, so it was measured with POS, which needs no
 training and therefore reads how much pulse survives each crop directly. 120
 random UBFC segments, same windows both times:
@@ -501,21 +508,27 @@ four more UBFC subjects whose HR readout drops out while the waveform stays inta
 
 ## 8. Protocol
 
-Both source papers' split: UBFC DATASET_2's first 30 subjects by number for
-training, the remaining 12 (subject38-49) for test. DATASET_1's six recordings join
-**training only**, so the test set stays exactly the published one while the data on
-disk gets used — they include the corpus's only post-exercise recording at 108 bpm.
+**One split over every corpus, assigned once and persisted.** `src.cli combine`
+pools UBFC, MR-NIRP and MCD into `build/clips_all.parquet` at 90/3/7, grouped by
+subject and **stratified by source** so each corpus reaches dev and test. `train`
+reads that column rather than deriving a split, so the partition cannot move when
+the manifest grows.
 
-Clips are **not** filtered by audit prominence. The paper uses all 42 subjects, and
-`DATASETS.md` cautions that selecting clips where a simple spectral estimator already
-agrees with the label makes any later result circular.
+The published UBFC protocol (first 30 subjects train, last 12 test) was removed:
+it only understands UBFC's `subjectN` ids, and on the pooled manifest it silently
+placed 606 of 666 subjects in train. Results here are not comparable with the
+papers' tables in any case — they use 160-frame windows and this trains at 300.
 
-**No validation split and no checkpoint selection.** Neither paper has one; both
-report the last epoch. The epoch budget therefore has to be chosen in advance.
+Clips are **not** filtered by a pulse-prominence screen. Selecting clips where a
+simple spectral estimator already agrees with the label makes any later result
+circular.
 
-Evaluation lists all non-overlapping 160-frame segments: 434 train, 144 test.
-Without that, a pass sees one centred window per clip and the reported MAE is a mean
-over twelve numbers.
+**No checkpoint selection.** Both papers report the last epoch, so the epoch
+budget is chosen in advance — 50 by default.
+
+Evaluation lists every non-overlapping segment, not one centred window per clip,
+and reports **per source**: MCD is 98.45% of the segments, so an aggregate over
+any split is a measurement of MCD.
 
 **POS and CHROM are scored on the same windows before training starts.** They need
 no training and publish ~4.06-4.08 bpm MAE on UBFC in every table in both papers. A
@@ -574,6 +587,7 @@ the decode and crop path is this project's rather than the toolbox's.
 **The skin mask is one median mask per clip**, so it does not track subject motion.
 Stable for UBFC's seated recordings.
 
-**Blood pressure is out of scope.** Nothing on disk pairs facial video with blood
-pressure and a recoverable pulse at a trainable scale — see `DATASETS.md`. The
-manifest still carries `sbp_mmhg` and `dbp_mmhg`; the model never reads them.
+**Blood pressure is out of scope.** The target is the pulse waveform and the
+heart rate read off it. The manifest still carries nullable `sbp_mmhg` and
+`dbp_mmhg` columns so MCD's cuff readings are not thrown away, but nothing reads
+them and no head predicts them.

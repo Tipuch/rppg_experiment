@@ -14,7 +14,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import polars as pl
 
 from .face import apply_box, median_face_box
 from .skin import median_skin_mask, normalise_brightness
@@ -74,24 +73,32 @@ def contact_sheet(result: dict) -> np.ndarray:
 
 
 def _targets() -> list[tuple[str, Path]]:
-    """A few distinct subjects per dataset, so a reviewer sees real variety."""
+    """A few distinct subjects per corpus, so a reviewer sees real variety.
+
+    Driven by the reader registry rather than a hardcoded list. The list version
+    named clbp300 and mcd, and clbp300 is no longer on disk -- so this rendered
+    samples for one corpus and silently skipped the two actually being trained on.
+
+    MR-NIRP is absent by construction: it ships no container this can decode, and
+    its own ingest already writes a crop per session.
+    """
+    from ..datasets import REGISTRY, SELF_PREPARED
+
     out: list[tuple[str, Path]] = []
-
-    clbp = sorted(Path("datasets/clbp-300-sample/ClBP-300_samples").glob("*.mov"))
-    out += [("clbp300", p) for p in clbp[:PER_SOURCE]]
-
-    mcd_db = Path("datasets/mcd_rppg/db.csv")
-    if mcd_db.exists():
-        root = mcd_db.parent
+    for name, reader in REGISTRY.items():
+        if name in SELF_PREPARED:
+            continue
+        found = reader.discover()
+        if not found.height:
+            continue
         seen: set[str] = set()
-        for rec in pl.read_csv(mcd_db).iter_rows(named=True):
-            patient = str(rec["patient_id"])
-            if patient in seen:
+        for row in found.iter_rows(named=True):
+            if row["subject_id"] in seen:
                 continue
-            path = root / str(rec["video"])
+            path = Path(row["video_path"])
             if path.exists() and path.stat().st_size > 1_000_000:
-                out.append(("mcd", path))
-                seen.add(patient)
+                out.append((name, path))
+                seen.add(row["subject_id"])
             if len(seen) >= PER_SOURCE:
                 break
     return out
