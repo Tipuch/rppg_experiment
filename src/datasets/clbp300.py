@@ -17,10 +17,11 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..paths import DATA_ROOT
 from .base import sessions_from
 
 NAME = "clbp300"
-ROOT = Path("datasets/clbp-300-sample/ClBP-300_samples")
+ROOT = DATA_ROOT / "clbp-300-sample" / "ClBP-300_samples"
 NAME_RE = re.compile(
     r"^(?P<subject>Subject\d+)_(?P<sex>[MF])(?P<age>\d+)_"
     r"(?P<sbp>\d+)_(?P<dbp>\d+)_(?P<hr>\d+)_(?P<lux>\d+)$"

@@ -26,10 +26,11 @@ import numpy as np
 import pytest
 
 from src.aggregation.remux import is_indexed, remux_path
+from src.paths import BUILD_ROOT
 
-MANIFEST = Path("build/clips.parquet")
+MANIFEST = BUILD_ROOT / "clips.parquet"
 needs_data = pytest.mark.skipif(
-    not MANIFEST.exists(), reason="needs build/clips.parquet and the MCD videos"
+    not MANIFEST.exists(), reason=f"needs {MANIFEST} and the MCD videos"
 )
 
 

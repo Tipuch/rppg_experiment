@@ -30,6 +30,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.paths import BUILD_ROOT
+
 # Categorical slots 1 and 2 of the reference palette. Validated together for the
 # light surface: CVD dE 24.7, normal-vision dE 33.6, both above 3:1 contrast.
 TRAIN_COLOUR = "#2a78d6"
@@ -84,9 +86,10 @@ def main() -> int:
                              "split's z-scored MSE for predicting the training mean; "
                              "neg-pearson draws 1.0, the score of uncorrelated "
                              "signals, which is split-independent.")
-    parser.add_argument("--manifest", type=Path, default=Path("build/clips_clean_ubfc.parquet"))
+    parser.add_argument("--manifest", type=Path,
+                        default=BUILD_ROOT / "clips_clean_ubfc.parquet")
     parser.add_argument("--suptitle", default="UBFC heart rate: training and dev loss per epoch")
-    parser.add_argument("--out", type=Path, default=Path("build/runs/loss.png"))
+    parser.add_argument("--out", type=Path, default=BUILD_ROOT / "runs" / "loss.png")
     args = parser.parse_args()
 
     panels = collect(args)

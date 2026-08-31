@@ -13,6 +13,10 @@ not as a target.
 removed. Its resolution was its own binding constraint (7.03 bpm bins against a
 10 bpm tolerance), so read them as one weak signal, not as a gate.
 
+**On the paths below.** They are written relative to `datasets/`, the default
+corpus root. Set `RPPG_DATA_ROOT` to read them from anywhere else; no reader
+hardcodes the root. See README.md § Requirements.
+
 ---
 
 ## A. Video with a usable pulse

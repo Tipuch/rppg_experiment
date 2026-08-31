@@ -25,6 +25,7 @@ import pytest
 
 from src.model.dataset import TARGET_FPS
 from src.model.framecache import window_indices
+from src.paths import BUILD_ROOT
 
 # --- arithmetic, no filesystem ---------------------------------------------
 
@@ -80,8 +81,9 @@ def test_the_anchor_is_clamped_into_a_short_clip() -> None:
 
 # --- equivalence against the decoder, on real video -------------------------
 
+UBFC_MANIFEST = BUILD_ROOT / "clips_clean_ubfc.parquet"
 pytestmark_real = pytest.mark.skipif(
-    not __import__("pathlib").Path("build/clips_clean_ubfc.parquet").exists(),
+    not UBFC_MANIFEST.exists(),
     reason="needs the UBFC manifest and videos on disk",
 )
 
@@ -90,7 +92,7 @@ pytestmark_real = pytest.mark.skipif(
 def clip() -> dict:
     import polars as pl
 
-    manifest = pl.read_parquet("build/clips_clean_ubfc.parquet")
+    manifest = pl.read_parquet(UBFC_MANIFEST)
     return manifest.to_dicts()[0]
 
 

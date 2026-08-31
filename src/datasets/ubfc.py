@@ -24,10 +24,11 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..paths import DATA_ROOT
 from .base import median_of_valid, sessions_from
 
 NAME = "ubfc"
-ROOT = Path("datasets/ubfc-rppg")
+ROOT = DATA_ROOT / "ubfc-rppg"
 SUBSETS = ("DATASET_1", "DATASET_2")
 
 

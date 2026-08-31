@@ -34,6 +34,7 @@ import torch
 from torch.utils.data import Dataset
 
 from ..aggregation.video import read_window
+from ..paths import BUILD_ROOT
 from . import framecache
 from .waveform import hr_from_waveform, load_ppg, sample_ppg
 
@@ -534,7 +535,7 @@ class WindowDataset(Dataset):
         return item
 
 
-def load_manifest(path: Path = Path("build/clips.parquet")) -> pl.DataFrame:
+def load_manifest(path: Path = BUILD_ROOT / "clips.parquet") -> pl.DataFrame:
     return pl.read_parquet(path)
 
 

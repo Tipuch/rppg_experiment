@@ -27,6 +27,8 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.paths import BUILD_ROOT
+
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_MUTED = "#52514e"
@@ -36,12 +38,14 @@ TRACE = "#2a78d6"
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=Path("build/clips_clean_ubfc.parquet"))
+    parser.add_argument("--manifest", type=Path,
+                        default=BUILD_ROOT / "clips_clean_ubfc.parquet")
     parser.add_argument("--clips", type=int, default=4, help="Clips to sample.")
     parser.add_argument("--frames", type=int, default=6, help="Frames shown per clip.")
     parser.add_argument("--window", type=int, default=160, help="Window length the model gets.")
     parser.add_argument("--seed", type=int, default=20260822)
-    parser.add_argument("--out", type=Path, default=Path("build/samples/train_batch.png"))
+    parser.add_argument("--out", type=Path,
+                        default=BUILD_ROOT / "samples" / "train_batch.png")
     args = parser.parse_args()
 
     from src.model.dataset import WindowDataset

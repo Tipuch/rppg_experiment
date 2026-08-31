@@ -101,6 +101,7 @@ from ..aggregation.skin import median_skin_mask
 from ..model import framecache
 from ..model.clips import crop_and_resize
 from ..model.waveform import hr_from_waveform
+from ..paths import BUILD_ROOT, DATA_ROOT
 from .base import (
     BAYER_CANDIDATES,
     BAYER_MODULATION_MIN,
@@ -142,8 +143,8 @@ ROW_SCHEMA: dict[str, pl.DataType] = {
     "ppg_max_gap_s": pl.Float64,
     "fps_source": pl.String,
 }
-DATASET_DIR = Path("datasets/mr-nirp")
-MASK_DIR = Path("build/masks")
+DATASET_DIR = DATA_ROOT / "mr-nirp"
+MASK_DIR = BUILD_ROOT / "masks"
 DETECT_FRAMES = 24
 
 # The corpus-wide answer from choose_bayer_code. Sessions are still checked
@@ -938,7 +939,7 @@ def _prepare_one(job: tuple) -> dict | None:
 
 def build(
     downloads: Path | None = None,
-    scratch_root: Path = Path("build/mrnirp_scratch"),
+    scratch_root: Path = BUILD_ROOT / "mrnirp_scratch",
     cache_dir: Path = framecache.CACHE_DIR,
     dataset_dir: Path = DATASET_DIR,
     limit: int | None = None,

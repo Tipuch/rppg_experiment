@@ -28,6 +28,23 @@ biomarkers under data use agreements. `src/model/baselines.py` loads POS and CHR
 from the vendored toolbox rather than reimplementing them, so `tools/rPPG-Toolbox`
 must be present for `baseline` and for the `--baselines` path of `train`.
 
+Both roots are relative to the working directory by default and neither is
+hardcoded anywhere else in the source. Repoint either from the environment when
+the corpora or the frame cache do not belong on the same volume as the code:
+
+| variable | default | holds |
+|---|---|---|
+| `RPPG_DATA_ROOT` | `datasets` | the corpora, read only |
+| `RPPG_BUILD_ROOT` | `build` | manifests, frame caches, masks, runs, figures |
+
+```
+RPPG_DATA_ROOT=/mnt/corpora RPPG_BUILD_ROOT=/scratch/build uv run python -m src.cli train
+```
+
+Both resolve once, at import of `src/paths.py`, and `~` is expanded. Every default
+path shown by `--help` follows them, so a command's printed default is the path it
+will actually use.
+
 ## Pipeline
 
 ```

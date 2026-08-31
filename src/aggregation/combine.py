@@ -37,6 +37,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..paths import BUILD_ROOT
 from .splits import RATIOS_MRNIRP, assign, segment_counts
 
 # Where each corpus is looked for, best source first. Candidates rather than one
@@ -44,14 +45,14 @@ from .splits import RATIOS_MRNIRP, assign, segment_counts
 # have run only some: MCD is taken from the remuxed manifest when it exists,
 # since seeking there is 9.5x faster, and from the plain one when it does not.
 DEFAULT_PARTS: dict[str, tuple[Path, ...]] = {
-    "ubfc": (Path("build/clips_ubfc.parquet"),
-             Path("build/clips_remux.parquet"),
-             Path("build/clips.parquet")),
-    "mrnirp": (Path("build/clips_mrnirp.parquet"),),
-    "mcd": (Path("build/clips_remux.parquet"),
-            Path("build/clips.parquet")),
+    "ubfc": (BUILD_ROOT / "clips_ubfc.parquet",
+             BUILD_ROOT / "clips_remux.parquet",
+             BUILD_ROOT / "clips.parquet"),
+    "mrnirp": (BUILD_ROOT / "clips_mrnirp.parquet",),
+    "mcd": (BUILD_ROOT / "clips_remux.parquet",
+            BUILD_ROOT / "clips.parquet"),
 }
-OUT_PARQUET = Path("build/clips_all.parquet")
+OUT_PARQUET = BUILD_ROOT / "clips_all.parquet"
 
 # Rebuilt here over the pooled table, so a per-corpus split cannot leak in.
 DROP_COLUMNS = ("split", "n_segments")

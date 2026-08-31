@@ -43,7 +43,9 @@ from pathlib import Path
 
 import polars as pl
 
-REMUX_DIR = Path("build/mcd_remux")
+from ..paths import BUILD_ROOT
+
+REMUX_DIR = BUILD_ROOT / "mcd_remux"
 
 
 def remux_path(out_dir: Path, clip_id: str) -> Path:

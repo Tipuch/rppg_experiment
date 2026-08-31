@@ -32,6 +32,7 @@ import polars as pl
 import torch
 from torch.utils.data import DataLoader
 
+from ..paths import BUILD_ROOT
 from .baselines import run as run_baselines
 from .cfmamba import CFMambaPhys
 from .dataset import (
@@ -121,7 +122,7 @@ class TrainConfig:
     # Continue from out_dir/last.pt instead of starting over. The schedule inputs
     # must match what the checkpoint was written under; see check_resumable.
     resume: bool = False
-    out_dir: Path = field(default_factory=lambda: Path("build/runs/cfmamba"))
+    out_dir: Path = field(default_factory=lambda: BUILD_ROOT / "runs" / "cfmamba")
 
 
 # Evaluation loaders get a fraction of the worker budget, and never persist.
@@ -446,7 +447,7 @@ def build_splits(cfg: TrainConfig, manifest_path: Path) -> dict[str, pl.DataFram
 
 def train(
     cfg: TrainConfig,
-    manifest_path: Path = Path("build/clips_ubfc.parquet"),
+    manifest_path: Path = BUILD_ROOT / "clips_ubfc.parquet",
     splits: dict[str, pl.DataFrame] | None = None,
 ) -> dict:
     if not torch.cuda.is_available():

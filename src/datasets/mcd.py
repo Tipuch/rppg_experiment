@@ -20,10 +20,11 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..paths import DATA_ROOT
 from .base import sessions_from
 
 NAME = "mcd"
-ROOT = Path("datasets/mcd_rppg")
+ROOT = DATA_ROOT / "mcd_rppg"
 DB = ROOT / "db.csv"
 PPG_DIR = "ppg_sync"
 VIDEO_DIR = "video"

@@ -16,11 +16,13 @@ from pathlib import Path
 
 import click
 
+from .paths import BUILD_ROOT
+
 # What the consuming commands read: the pooled manifest `combine` writes, which
 # is also what `train` defaults to. `clips` and `remux` produce CLIPS_MANIFEST
 # instead -- they are upstream of the pool, not readers of it.
-DEFAULT_MANIFEST = Path("build/clips_all.parquet")
-CLIPS_MANIFEST = Path("build/clips.parquet")
+DEFAULT_MANIFEST = BUILD_ROOT / "clips_all.parquet"
+CLIPS_MANIFEST = BUILD_ROOT / "clips.parquet"
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -50,7 +52,7 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--out", type=click.Path(path_type=Path),
-              default=Path("build/clips_all.parquet"), show_default=True)
+              default=BUILD_ROOT / "clips_all.parquet", show_default=True)
 @click.option("--seed", type=int, default=20260822, show_default=True)
 @click.option("--frames", type=int, default=300, show_default=True,
               help="Window length the split is balanced in. Match --frames on train.")
@@ -95,10 +97,10 @@ def combine(out: Path, seed: int, frames: int) -> None:
 @click.option("--downloads", type=click.Path(path_type=Path), default=None,
               help="Where the MR-NIRP zips are. Defaults to ~/Downloads.")
 @click.option("--out", type=click.Path(path_type=Path),
-              default=Path("build/clips_mrnirp.parquet"), show_default=True,
+              default=BUILD_ROOT / "clips_mrnirp.parquet", show_default=True,
               help="Where to write the manifest, split column included.")
 @click.option("--cache-dir", type=click.Path(path_type=Path),
-              default=Path("build/frames_cache"), show_default=True,
+              default=BUILD_ROOT / "frames_cache", show_default=True,
               help="Frame cache. The same one the other corpora use, on purpose.")
 @click.option("--limit", type=int, default=None,
               help="Prepare only the first N sessions. Use 2 for a trial run.")
@@ -609,9 +611,9 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
               help="Synchronise inside the training loop so the reported compute "
                    "time is compute rather than queue submission. Slows the run.")
 @click.option("--manifest", type=click.Path(exists=True, path_type=Path),
-              default=Path("build/clips_all.parquet"), show_default=True)
+              default=BUILD_ROOT / "clips_all.parquet", show_default=True)
 @click.option("--out", type=click.Path(path_type=Path),
-              default=Path("build/runs/cfmamba"), show_default=True)
+              default=BUILD_ROOT / "runs" / "cfmamba", show_default=True)
 def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
           ffn_activation: str, batch: int, frames: int, workers: int, log_every: int,
           alpha: float, beta: float, no_hr_balance: bool, no_flip: bool,
@@ -746,7 +748,7 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
                    f"windows  -> {result['bpm_fft'] - result['bpm_true']:+.1f} bpm, "
                    f"MACC {result['macc']:.3f}")
 
-    out = out or Path("build/predict") / f"{predict_mod.clip_name(video)}.png"
+    out = out or BUILD_ROOT / "predict" / f"{predict_mod.clip_name(video)}.png"
     predict_plot.plot(
         result["trace"], result["peaks"], fps=TARGET_FPS, start_s=start,
         bpm_fft=result["bpm_fft"], bpm_beats=result["bpm_beats"],

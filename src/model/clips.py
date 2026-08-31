@@ -27,11 +27,12 @@ import polars as pl
 from ..aggregation.face import BOX_PAD, apply_box, median_face_box
 from ..aggregation.skin import median_skin_mask
 from ..aggregation.video import probe, read_keyframes
+from ..paths import BUILD_ROOT
 
 CROP = 256
 DETECT_FRAMES = 24
-OUT_PARQUET = Path("build/clips.parquet")
-MASK_DIR = Path("build/masks")
+OUT_PARQUET = BUILD_ROOT / "clips.parquet"
+MASK_DIR = BUILD_ROOT / "masks"
 
 CLIP_SCHEMA: dict[str, pl.DataType] = {
     "clip_id": pl.String,

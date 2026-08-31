@@ -63,7 +63,9 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-CACHE_DIR = Path("build/frames_cache")
+from ..paths import BUILD_ROOT
+
+CACHE_DIR = BUILD_ROOT / "frames_cache"
 
 # Frames are stored as a headerless uint8 dump beside a JSON sidecar rather than as
 # .npy. The shape is then recoverable from the file size alone, so a build terminated

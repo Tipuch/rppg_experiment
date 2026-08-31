@@ -18,13 +18,14 @@ import torch
 from scipy import signal as sps
 from torch.utils.data import DataLoader
 
+from ..paths import BUILD_ROOT
 from .cfmamba import CFMambaPhys
 from .dataset import TARGET_FPS, WindowDataset, expand_to_segments
 from .postprocess import HIGH_HZ, bandpass, heart_rate, macc
 from .train import TrainConfig, build_model, load_checkpoint
 from .waveform import load_ppg
 
-DEFAULT_RUNS = Path("build/runs")
+DEFAULT_RUNS = BUILD_ROOT / "runs"
 
 
 def latest_checkpoint(runs_dir: Path = DEFAULT_RUNS) -> Path:

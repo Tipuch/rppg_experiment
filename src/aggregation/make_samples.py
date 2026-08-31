@@ -15,11 +15,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ..paths import BUILD_ROOT
 from .face import apply_box, median_face_box
 from .skin import median_skin_mask, normalise_brightness
 from .video import probe, read_frames
 
-OUT = Path("build/samples")
+OUT = BUILD_ROOT / "samples"
 CROP = 256
 SECONDS = 5.0           # enough of each clip to see the pipeline behave
 CONTACT_FRAMES = 4
