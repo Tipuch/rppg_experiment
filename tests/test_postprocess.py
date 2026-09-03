@@ -17,9 +17,13 @@ from src.model.postprocess import (
     HIGH_HZ,
     LOW_HZ,
     bandpass,
+    beats,
     compare,
     heart_rate,
+    interval_hr,
+    refine,
     snr,
+    spectral_hr,
 )
 
 FPS = 30.0
@@ -104,3 +108,117 @@ def test_degenerate_input_returns_nan_rather_than_raising() -> None:
     assert math.isnan(heart_rate(np.zeros(300), FPS))
     assert math.isnan(heart_rate(np.array([1.0, 2.0]), FPS))
     assert math.isnan(heart_rate(np.full(300, np.nan), FPS))
+
+
+def test_spectral_hr_resolves_a_rate_that_falls_between_bins() -> None:
+    """`heart_rate` quantises to the periodogram grid: at 300 frames the FFT is
+    padded to 512 and the bins are 3.516 bpm apart, so a rate landing midway
+    between two of them cannot be returned. Interpolating the vertex of the peak
+    recovers it."""
+    between = 68.5      # bins either side are 66.80 and 70.31
+    assert spectral_hr(_tone(between), FPS) == pytest.approx(between, abs=0.5)
+    assert abs(heart_rate(_tone(between), FPS) - between) > 1.0
+
+
+@pytest.mark.parametrize("seconds", [5.33, 10.0, 30.0])
+def test_spectral_hr_does_not_depend_on_clip_length(seconds: float) -> None:
+    """Same requirement `heart_rate` carries: an estimator whose answer moves with
+    T is measuring the window. Padding interpolates the grid, it does not shift
+    the peak."""
+    assert spectral_hr(_tone(72.0, seconds), FPS) == pytest.approx(72.0, abs=1.0)
+
+
+@pytest.mark.parametrize("window", ["hann", "boxcar"])
+def test_spectral_hr_recovers_a_clean_tone_under_either_window(window: str) -> None:
+    """The window is a swept parameter, not a settled one -- on real clips Hann
+    fixed one and broke another. Both must at least read a clean tone back, so
+    changing the default cannot silently break the readout."""
+    assert spectral_hr(_tone(96.0), FPS, window=window) == pytest.approx(96.0, abs=1.0)
+
+
+def test_spectral_hr_is_amplitude_and_offset_invariant() -> None:
+    """Nothing fixed the scale of a predicted BVP: Eq. 19's temporal term is
+    negative Pearson, which is invariant to a positive scale factor."""
+    wave = _tone(84.0)
+    assert spectral_hr(wave * 0.001 + 50.0, FPS) == pytest.approx(
+        spectral_hr(wave, FPS), abs=1e-6
+    )
+
+
+def test_spectral_hr_returns_nan_on_degenerate_input() -> None:
+    """Mirrors `heart_rate`: a dead prediction early in training must not crash an
+    evaluation pass."""
+    assert math.isnan(spectral_hr(np.zeros(300), FPS))
+    assert math.isnan(spectral_hr(np.array([1.0, 2.0]), FPS))
+    assert math.isnan(spectral_hr(np.full(300, np.nan), FPS))
+
+
+def test_heart_rate_still_matches_the_vendored_toolbox() -> None:
+    """`spectral_hr` exists alongside `heart_rate` rather than replacing it. Every
+    number in README.md and every comparison against the rPPG-Toolbox tables comes
+    through `heart_rate`, so it must keep returning the toolbox's own answer: a
+    bare argmax over a rectangular periodogram padded to the next power of two."""
+    wave = _tone(68.5)
+    bins = np.fft.rfftfreq(512, d=1.0 / FPS) * 60.0
+    assert heart_rate(wave, FPS) in bins
+    assert heart_rate(wave, FPS) == pytest.approx(66.80, abs=0.01)
+
+
+def _tone_with_harmonic() -> np.ndarray:
+    """72 bpm fundamental under a stronger second harmonic -- a real pulse has one.
+
+    The spectral argmax lands on 70.31, the nearest bin to the fundamental. Beat
+    timing recovers 72.00, because the harmonic rides on the beats rather than
+    displacing them.
+    """
+    t = np.arange(300) / FPS
+    return np.sin(2 * math.pi * 1.2 * t) + 1.4 * np.sin(2 * math.pi * 2.4 * t)
+
+
+def test_interval_hr_reads_the_fundamental_through_a_stronger_harmonic() -> None:
+    assert interval_hr(_tone_with_harmonic(), FPS) == pytest.approx(72.0, abs=0.5)
+    assert heart_rate(_tone_with_harmonic(), FPS) == pytest.approx(70.31, abs=0.5)
+
+
+def test_compare_reports_the_interval_readout() -> None:
+    """Swept over 1569 labelled test windows, the interval readout cut RMSE from
+    8.18 to 6.60 bpm and raised rho from 0.793 to 0.857 against the spectral
+    argmax, at the cost of 0.35 bpm of MAE -- fewer large misses, slightly more
+    small error. README.md records the sweep."""
+    wave = _tone_with_harmonic()
+    result = compare(wave, wave, FPS)
+    assert result["hr_pred"] == pytest.approx(interval_hr(wave, FPS), abs=1e-9)
+    assert result["hr_true"] == pytest.approx(interval_hr(wave, FPS), abs=1e-9)
+
+
+def test_beats_never_finds_two_peaks_inside_one_cycle():
+    """The spacing floor is the period of 2.5 Hz, the top of the reporting band."""
+    trace = _tone(150, 300)
+    found = beats(trace)
+    assert len(found) >= 2
+    assert np.diff(found).min() >= FPS / 2.5 - 1
+
+
+def test_beats_returns_empty_on_a_degenerate_trace():
+    assert len(beats(np.zeros(4))) == 0
+    assert len(beats(np.full(300, np.nan))) == 0
+
+
+def test_refine_locates_a_peak_between_frames() -> None:
+    """An integer peak index quantises the interval by one frame, which at 30 fps
+    is 3.4 bpm at 110 and 6 bpm at 150. The parabola through the three samples
+    around a peak recovers where it actually sits, and the same formula does the
+    same job for a spectral peak between bins -- so both call one helper."""
+    trace = np.array([0.0, 1.0, 3.0, 2.0, 0.0])
+    peaks = np.array([2])
+    refined = refine(trace, peaks)
+    # Vertex of the parabola through (1, 1.0), (2, 3.0), (3, 2.0).
+    assert refined == pytest.approx([2.0 + 0.5 * (1.0 - 2.0) / (1.0 - 6.0 + 2.0)])
+    assert -0.5 <= refined[0] - 2.0 <= 0.5
+
+
+def test_refine_leaves_a_peak_at_the_edge_alone() -> None:
+    """A peak on the first or last sample has no left or right neighbour, so there
+    is no parabola to take a vertex from."""
+    trace = np.array([3.0, 1.0, 0.0, 1.0, 2.0])
+    assert refine(trace, np.array([0, 4])) == pytest.approx([0.0, 4.0])

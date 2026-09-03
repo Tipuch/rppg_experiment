@@ -21,11 +21,10 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from . import clbp300, mcd, mrnirp, ubfc
+from . import mcd, mrnirp, ubfc
 from .base import SESSION_COLUMNS, Reader, empty_sessions
 
 REGISTRY: dict[str, Reader] = {
-    clbp300.NAME: clbp300,
     ubfc.NAME: ubfc,
     mcd.NAME: mcd,
     mrnirp.NAME: mrnirp,

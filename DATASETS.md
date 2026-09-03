@@ -138,8 +138,10 @@ phase survives.
 
 Five clips, 1.6 GB, 3/5 pass. **No longer on disk** -- `datasets/clbp-300-sample/`
 is absent, so `build/clips.parquet` still lists five rows whose files do not
-exist. The reader in `src/datasets/clbp300.py` is retained and returns nothing.
-The full 300 subjects sit behind a data use agreement.
+exist. The reader has been removed: it returned nothing, and the pooled manifest
+`build/clips_all.parquet` never carried the corpus. The stale rows survive only in
+`build/clips.parquet` and `build/clips_remux.parquet`, which carry their own
+enum and still read. The full 300 subjects sit behind a data use agreement.
 
 ---
 

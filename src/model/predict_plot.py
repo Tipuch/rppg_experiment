@@ -1,6 +1,6 @@
 """The figure `cli predict` writes.
 
-Palette and conventions are the ones in tools/plot_loss.py and tools/sample_batch.py:
+Palette and conventions are the ones in tools/plot_loss.py:
 CVD-validated against this surface, and every series direct-named because aqua
 sits at 2.74:1 against it -- under 3:1, so colour alone cannot carry identity.
 """
@@ -99,16 +99,21 @@ def plot(
     for side in ("left", "bottom"):
         axis.spines[side].set_color(GRID)
 
+    # The interval readout leads: swept over 1569 labelled test windows it made
+    # fewer large misses than the spectral peak (RMSE 6.60 against 8.18). The
+    # spectral peak stays in the subtitle as the cross-check -- the two
+    # disagreeing is what says the window holds more than one rhythm.
+    headline = f"{bpm_beats:.1f} bpm" if np.isfinite(bpm_beats) else "no rate"
+    if bpm_true is not None and np.isfinite(bpm_true) and np.isfinite(bpm_beats):
+        headline += f"   vs {bpm_true:.1f} contact   ({bpm_beats - bpm_true:+.1f})"
     beats_note = (
-        f"{bpm_beats:.1f} bpm from {len(peaks)} beats" if np.isfinite(bpm_beats)
+        f"median of {len(peaks)} inter-beat intervals" if np.isfinite(bpm_beats)
         else "too few beats to time"
     )
-    headline = f"{bpm_fft:.1f} bpm"
-    if bpm_true is not None and np.isfinite(bpm_true):
-        headline += f"   vs {bpm_true:.1f} contact   ({bpm_fft - bpm_true:+.1f})"
     figure.text(0.008, 0.965, headline, color=INK, fontsize=19,
                 fontweight="bold", va="top")
-    figure.text(0.008, 0.885, f"dominant cardiac-band peak  ·  {beats_note}",
+    figure.text(0.008, 0.885,
+                f"{beats_note}  ·  spectral peak {bpm_fft:.1f} bpm",
                 color=INK_MUTED, fontsize=9.5, va="top")
     figure.text(0.998, 0.965, title, color=INK, fontsize=10.5, ha="right", va="top")
     figure.text(0.998, 0.905, subtitle, color=INK_MUTED, fontsize=9, ha="right",

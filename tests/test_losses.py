@@ -116,10 +116,15 @@ def test_the_label_carries_no_gradient() -> None:
 
 # --- composite ----------------------------------------------------------------
 
-def test_the_weights_are_rhythmformer_s_measured_ratio() -> None:
-    """Table 13: time alone 3.56 MAE, frequency alone 13.32, together 3.13. The
-    frequency term cannot carry the model, so it is not weighted as if it could."""
-    assert (DEFAULT_ALPHA, DEFAULT_BETA) == (0.2, 1.0)
+def test_the_temporal_term_is_weighted_to_be_worth_optimising() -> None:
+    """CFMamba states Eq. 19 with alpha and beta as symbols and never gives values.
+    RhythmFormer Section 3.4 Table 13 supplied 0.2 and 1.0, and this project ran
+    that way -- until REPORT_cfmamba.md finding 2: the temporal term went flat from
+    epoch 2 and at alpha=0.2 was ~1.5% of the final loss, so the optimiser had
+    almost no reason to fix the waveform it is supposed to be predicting.
+
+    0.8 is a departure from RhythmFormer, on this project's own measurement."""
+    assert (DEFAULT_ALPHA, DEFAULT_BETA) == (0.8, 1.0)
 
 
 def test_the_composite_is_lowest_for_an_exact_prediction() -> None:

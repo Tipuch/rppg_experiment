@@ -40,8 +40,12 @@ from .waveform import neg_pearson
 # 11.25 bpm an unpadded 160-frame DFT would give.
 BPM_MIN, BPM_MAX = 45, 150
 
-# RhythmFormer Section 3.4, Table 13.
-DEFAULT_ALPHA = 0.2
+# CFMamba Eq. 19 states alpha and beta as symbols and gives no values.
+# RhythmFormer Section 3.4 Table 13 supplied 0.2 and 1.0, and this project ran that
+# way until REPORT_cfmamba.md finding 2: the temporal term went flat from epoch 2,
+# and at alpha=0.2 it was ~1.5% of the final loss -- the optimiser had almost no
+# reason to fix the waveform the model exists to predict. beta stays at 1.0.
+DEFAULT_ALPHA = 0.8
 DEFAULT_BETA = 1.0
 
 

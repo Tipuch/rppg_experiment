@@ -15,13 +15,12 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import torch
-from scipy import signal as sps
 from torch.utils.data import DataLoader
 
 from ..paths import BUILD_ROOT
 from .cfmamba import CFMambaPhys
 from .dataset import TARGET_FPS, WindowDataset, expand_to_segments
-from .postprocess import HIGH_HZ, bandpass, heart_rate, macc
+from .postprocess import bandpass, beats, heart_rate, interval_hr, macc
 from .train import TrainConfig, build_model, load_checkpoint
 from .waveform import load_ppg
 
@@ -204,38 +203,6 @@ def stitch(windows: np.ndarray) -> np.ndarray:
     return out.reshape(-1)
 
 
-def beats(trace: np.ndarray, fps: float = TARGET_FPS) -> np.ndarray:
-    """Peak indices, one per cardiac cycle.
-
-    Minimum spacing is the period of 2.5 Hz, the top of the reporting band, so two
-    peaks cannot fall inside one beat. `trace` is expected band-passed.
-    """
-    trace = np.asarray(trace, dtype=np.float64).ravel()
-    if trace.size < 8 or not np.isfinite(trace).all():
-        return np.empty(0, dtype=int)
-    found, _ = sps.find_peaks(trace, distance=max(1, int(fps / HIGH_HZ)))
-    return found
-
-
-def _refine(trace: np.ndarray, peaks: np.ndarray) -> np.ndarray:
-    """Sub-sample peak positions, by the vertex of a parabola through 3 points.
-
-    An integer index quantises the interval by one frame, which at 30 fps is 3.4
-    bpm at 110 and 6 bpm at 150 -- coarser than the difference this number exists
-    to show. The band-pass leaves a smooth trace, so the three samples around a
-    peak locate its vertex.
-    """
-    if len(peaks) == 0:
-        return peaks.astype(np.float64)
-    inner = peaks[(peaks > 0) & (peaks < len(trace) - 1)]
-    if len(inner) != len(peaks):
-        return peaks.astype(np.float64)
-    left, mid, right = trace[peaks - 1], trace[peaks], trace[peaks + 1]
-    denominator = left - 2 * mid + right
-    shift = np.where(np.abs(denominator) > 1e-12, 0.5 * (left - right) / denominator, 0.0)
-    return peaks + np.clip(shift, -0.5, 0.5)
-
-
 def analyse(
     windows: np.ndarray, fps: float = TARGET_FPS, truth: np.ndarray | None = None,
 ) -> dict:
@@ -251,15 +218,17 @@ def analyse(
     trace = stitch(windows)
     filtered = bandpass(trace, fps)
     peaks = beats(filtered, fps)
-    # Median interval rather than mean: one missed or doubled beat moves a mean of
-    # a dozen intervals by several bpm.
-    ibi = float(np.median(np.diff(_refine(filtered, peaks)))) / fps if len(peaks) > 1 else float("nan")
-    per_window = np.array([heart_rate(w, fps) for w in windows], dtype=np.float64)
+    per_window = np.array(
+        [interval_hr(w, fps) for w in windows], dtype=np.float64
+    )
     return {
         "trace": filtered,
         "peaks": peaks,
+        # The reported rate. `bpm_fft` is kept beside it as the spectral
+        # cross-check -- the two disagreeing is the signal that the window holds
+        # more than one rhythm.
+        "bpm_beats": interval_hr(filtered, fps, filtered=True),
         "bpm_fft": heart_rate(filtered, fps, filtered=True),
-        "bpm_beats": 60.0 / ibi,
         "per_window_bpm": per_window,
         "seconds": len(filtered) / fps,
         # Where one window ends and the next begins, in samples.
@@ -272,7 +241,7 @@ def _truth_terms(truth: np.ndarray | None, fps: float, predicted: np.ndarray) ->
     if truth is None:
         return {}
     reference = bandpass(stitch(truth), fps)
-    bpm_true = heart_rate(reference, fps, filtered=True)
+    bpm_true = interval_hr(reference, fps, filtered=True)
     return {
         "truth": reference,
         "bpm_true": bpm_true,

@@ -36,7 +36,7 @@ MASK_DIR = BUILD_ROOT / "masks"
 
 CLIP_SCHEMA: dict[str, pl.DataType] = {
     "clip_id": pl.String,
-    "source": pl.Enum(["clbp300", "mcd", "mrnirp", "ubfc"]),
+    "source": pl.Enum(["mcd", "mrnirp", "ubfc"]),
     "subject_id": pl.String,
     "video_path": pl.String,
     "fps": pl.Float32,

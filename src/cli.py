@@ -562,7 +562,7 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
 @click.option("--workers", type=int, default=8, show_default=True)
 @click.option("--log-every", type=int, default=25, show_default=True,
               help="Steps between progress lines.")
-@click.option("--alpha", type=float, default=0.2, show_default=True,
+@click.option("--alpha", type=float, default=0.8, show_default=True,
               help="Weight on the temporal (negative Pearson) term, Eq. 19.")
 @click.option("--beta", type=float, default=1.0, show_default=True,
               help="Weight on the frequency cross-entropy term, Eq. 19.")
@@ -601,7 +601,7 @@ def baseline(manifest: Path, frames: int, workers: int, methods: str, split: str
 @click.option("--stride", type=int, default=None,
               help="Segment stride in frames. Defaults to non-overlapping. Raise it "
                    "to subsample a large corpus.")
-@click.option("--no-baselines", is_flag=True, default=False,
+@click.option("--no-baselines", is_flag=True, default=True,
               help="Skip POS/CHROM. They take a few minutes and are the floor.")
 @click.option("--resume", is_flag=True, default=False,
               help="Continue from <out>/last.pt: weights, optimiser moments, and "
@@ -688,9 +688,10 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
     invariant to a positive scale factor, so each window is z-scored before the
     stitch and only the timing carries meaning.
 
-    Two rates are reported: the dominant cardiac-band spectral peak, which is what
-    every table in this project quotes, and the median inter-beat interval of the
-    marked peaks.
+    Two rates are reported. The median inter-beat interval of the marked peaks is
+    the one every table in this project quotes; the dominant cardiac-band spectral
+    peak follows it as a cross-check. They disagree when the window holds more than
+    one rhythm, and `src.cli readout` is what settled which to lead with.
     """
     import numpy as np
     import torch
@@ -736,16 +737,16 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
 
     per_window = result["per_window_bpm"]
     finite = per_window[np.isfinite(per_window)]
-    click.echo(f"\n  {result['bpm_fft']:.1f} bpm  dominant cardiac-band peak "
-               f"over {result['seconds']:.1f}s")
-    click.echo(f"  {result['bpm_beats']:.1f} bpm  median inter-beat interval, "
-               f"{len(result['peaks'])} beats")
+    click.echo(f"\n  {result['bpm_beats']:.1f} bpm  median inter-beat interval "
+               f"over {result['seconds']:.1f}s, {len(result['peaks'])} beats")
+    click.echo(f"  {result['bpm_fft']:.1f} bpm  dominant cardiac-band peak, "
+               f"the spectral cross-check")
     if len(finite):
         click.echo(f"  per window: {finite.min():.1f}-{finite.max():.1f} bpm "
                    f"over {len(finite)} windows")
     if "bpm_true" in result:
         click.echo(f"\n  {result['bpm_true']:.1f} bpm  contact PPG over the same "
-                   f"windows  -> {result['bpm_fft'] - result['bpm_true']:+.1f} bpm, "
+                   f"windows  -> {result['bpm_beats'] - result['bpm_true']:+.1f} bpm, "
                    f"MACC {result['macc']:.3f}")
 
     out = out or BUILD_ROOT / "predict" / f"{predict_mod.clip_name(video)}.png"
@@ -761,6 +762,117 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
     wave_path = out.with_name(f"{out.stem}_wave.npy")
     np.save(wave_path, result["trace"])
     click.echo(f"\nwrote {out} and {wave_path}")
+
+
+@cli.command()
+@click.option("--manifest", type=click.Path(exists=True, path_type=Path),
+              default=DEFAULT_MANIFEST, show_default=True)
+@click.option("--model", "model_path", type=click.Path(exists=True, path_type=Path),
+              default=None,
+              help="Checkpoint to run. Defaults to the most recently written "
+                   "build/runs/*/final.pt or last.pt.")
+@click.option("--split", type=click.Choice(["train", "dev", "test"]),
+              default="test", show_default=True)
+@click.option("--stride", type=int, default=None,
+              help="Segment stride in frames. Defaults to non-overlapping. Raise it "
+                   "to subsample -- MCD is ~98% of the split whatever this does.")
+@click.option("--limit", type=int, default=None,
+              help="Score only the first N segments. The sweep is a comparison "
+                   "between readouts, not a report, so it does not need all of them.")
+@click.option("--batch", type=int, default=4, show_default=True)
+@click.option("--workers", type=int, default=4, show_default=True)
+@click.option("--dump", type=click.Path(path_type=Path), default=None,
+              help="Where the forward pass is cached. "
+                   "Defaults to build/readout_<split>.npz.")
+@click.option("--force", is_flag=True, default=False,
+              help="Re-run the forward pass even though the dump exists.")
+def readout(manifest: Path, model_path: Path | None, split: str, stride: int | None,
+            limit: int | None, batch: int, workers: int, dump: Path | None,
+            force: bool) -> None:
+    """Score every heart-rate readout against contact PPG, on one split.
+
+    Three readouts disagree by up to 15 bpm on the clips inspected by hand, in
+    both directions, and none of them won the one clip that had contact PPG to
+    check against. This settles the choice on labelled data instead.
+
+    The forward pass is cached, so adding a variant and re-running costs no GPU
+    time. The truth rate is read with the same variant as the prediction --
+    reading them differently would report the gap between two methods as model
+    error.
+    """
+    import numpy as np
+    import polars as pl
+    import torch
+    from torch.utils.data import DataLoader
+
+    from .model import readout as readout_mod
+    from .model.dataset import TARGET_FPS, WindowDataset
+    from .model.predict import load_model
+    from .model.train import build_splits
+
+    dump = dump or BUILD_ROOT / f"readout_{split}.npz"
+
+    if force or not dump.exists():
+        if not torch.cuda.is_available():
+            raise click.ClickException(
+                "CUDA required for the forward pass: Mamba-3's scan kernel has no "
+                f"CPU path. An existing {dump} would be scored without one."
+            )
+        from .model.predict import latest_checkpoint
+
+        checkpoint = model_path or latest_checkpoint()
+        model, config, state = load_model(checkpoint)
+        if stride is not None:
+            config.stride_frames = stride
+        click.echo(f"{checkpoint}  epoch {state.get('epochs', '?')}  "
+                   f"{config.n_frames} frames per window")
+
+        segments = build_splits(config, manifest)[split]
+        if limit:
+            segments = segments.head(limit)
+        click.echo(f"{split}: {segments.height} segments")
+
+        loader = DataLoader(
+            WindowDataset(segments, n_frames=config.n_frames, train=False,
+                          resolution=config.resolution,
+                          frame_norm=config.frame_norm,
+                          apply_skin_mask=config.apply_skin_mask,
+                          return_waveform=True),
+            batch_size=batch, shuffle=False, num_workers=workers,
+            prefetch_factor=2 if workers else None,
+        )
+        predicted_windows: list[np.ndarray] = []
+        truth_windows: list[np.ndarray] = []
+        sources: list[str] = []
+        with torch.no_grad():
+            for step, item in enumerate(loader, start=1):
+                # train=False fixes the resampling factor at 1.0. A stretched
+                # window would make every bpm below wrong by that factor, and the
+                # sweep would rank the readouts on an artefact of the loader.
+                scale = item["fps_scale"].numpy()
+                if not np.allclose(scale, 1.0):
+                    raise click.ClickException(
+                        f"expected fps_scale 1.0 from an evaluation loader, got {scale}"
+                    )
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    out = model(item["frames"].cuda(non_blocking=True),
+                                item["skin"].cuda(non_blocking=True))
+                predicted_windows.append(out.float().cpu().numpy())
+                truth_windows.append(item["wave"].numpy())
+                sources.extend(c.split("/")[0] for c in item["clip_id"])
+                if step % 25 == 0:
+                    click.echo(f"  {len(sources)} windows")
+        readout_mod.save_dump(
+            dump, np.concatenate(predicted_windows), np.concatenate(truth_windows),
+            sources,
+        )
+        click.echo(f"wrote {dump}")
+
+    predicted, truth, sources = readout_mod.load_dump(dump)
+    click.echo(f"\n{len(predicted)} windows from {dump}")
+    table = readout_mod.score(predicted, truth, sources, TARGET_FPS)
+    with pl.Config(tbl_rows=-1, tbl_width_chars=200):
+        click.echo(table)
 
 
 if __name__ == "__main__":

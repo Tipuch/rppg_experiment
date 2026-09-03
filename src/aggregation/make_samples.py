@@ -77,8 +77,9 @@ def _targets() -> list[tuple[str, Path]]:
     """A few distinct subjects per corpus, so a reviewer sees real variety.
 
     Driven by the reader registry rather than a hardcoded list. The list version
-    named clbp300 and mcd, and clbp300 is no longer on disk -- so this rendered
-    samples for one corpus and silently skipped the two actually being trained on.
+    named a corpus that had since been removed from disk alongside mcd, so this
+    rendered samples for one corpus and silently skipped the ones actually being
+    trained on.
 
     MR-NIRP is absent by construction: it ships no container this can decode, and
     its own ingest already writes a crop per session.

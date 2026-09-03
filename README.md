@@ -3,7 +3,7 @@
 A PyTorch implementation of CFMamba-Phys (Wang et al., *Biomedical Signal
 Processing and Control* 126 (2026) 110996), a frequency-aware state space model
 that predicts a blood-volume-pulse waveform from face video. Heart rate is derived
-from the predicted waveform by band-pass and periodogram, not regressed directly.
+from the predicted waveform by band-pass and beat timing, not regressed directly.
 
 0.9327M parameters, 79.15M MACs per frame. Published figures are 0.91M and 80.82M.
 
@@ -55,7 +55,7 @@ video -> ffmpeg decode at 30 fps, face box cropped inside the filter graph
       -> PGA                         Gaussian skin prior, channel-wise gating
       -> 4 x [Mamba + CAM, DF-FFN]   space is collapsed; a pure time series
       -> 1D conv head                one BVP sample per input frame
-      -> Butterworth 0.75-2.5 Hz + PSD -> heart rate
+      -> Butterworth 0.75-2.5 Hz + beat intervals -> heart rate
 ```
 
 ## Commands
@@ -75,6 +75,7 @@ uv run python -m src.cli sanity    # recover a synthetic pulse
 uv run python -m src.cli baseline  # POS and CHROM on the test windows
 uv run python -m src.cli train     # fit all corpora, 50 epochs, then score
 uv run python -m src.cli predict   # run one video through a model, plot the pulse
+uv run python -m src.cli readout   # score every heart-rate readout on a labelled split
 uv run python tools/plot_loss.py build/runs/<name>
 ```
 
@@ -109,7 +110,7 @@ CFMamba Eq. 19-21, verified against the paper and against the reference
 implementation in `tools/rPPG-Toolbox`:
 
 ```
-L = alpha * L_time + beta * L_freq        alpha = 0.2, beta = 1.0
+L = alpha * L_time + beta * L_freq        alpha = 0.8, beta = 1.0
 L_time = 1 - Pearson(S_pred, S_gt)
 L_freq = CE(PSD(S_pred), argmax(PSD(S_gt)))
 ```
@@ -121,14 +122,57 @@ from the contact PPG rather than from the manifest's heart-rate column, because
 five UBFC subjects have a broken heart-rate readout and an intact waveform.
 
 CFMamba states Eq. 19 with alpha and beta as symbols and does not give their
-values. 0.2 and 1.0 are from RhythmFormer Section 3.4, whose frequency loss is the
-same construction.
+values. RhythmFormer Section 3.4 supplied 0.2 and 1.0, whose frequency loss is the
+same construction, and this project ran that way until `REPORT_cfmamba.md`
+finding 2: the temporal term went flat from epoch 2, and at `alpha=0.2` it was
+~1.5% of the final loss -- so the optimiser had almost no reason to fix the
+waveform the model exists to predict. **alpha is now 0.8**, a deliberate departure
+from RhythmFormer on this project's own measurement. Loss values from runs before
+the change are on a different scale and are not comparable term by term.
+
+## Reading heart rate off the waveform
+
+Heart rate is **the median inter-beat interval** of the predicted BVP: band-pass,
+detect one peak per cardiac cycle, interpolate each peak's position to sub-frame
+accuracy, difference them, take the median. This is what pulse oximeters and wrist
+wearables display, and `src.model.postprocess.interval_hr` is the function every
+number below comes through.
+
+It replaced the dominant spectral peak, and the replacement was measured rather
+than argued. `src.cli readout` runs one forward pass over a labelled split, caches
+it, and scores every candidate readout against contact PPG. Over 1569 test windows,
+strided so the sample spans all 265 test clips:
+
+| readout | MAE | RMSE | rho |
+|---|---|---|---|
+| interval, median IBI | 3.70 | **6.60** | **0.857** |
+| spectral peak, rectangular, 8x pad | **3.25** | 8.01 | 0.800 |
+| spectral peak, toolbox argmax | 3.35 | 8.18 | 0.793 |
+| spectral peak, Hann, 8x pad | 3.39 | 8.04 | 0.804 |
+
+The interval readout has the *worst* MAE and the best RMSE by 19%. It makes fewer
+large misses and slightly more small ones, and rho -- whether the readout tracks
+the rate across windows at all -- rises from 0.793 to 0.857. On the one clip
+inspected by hand with contact PPG, the error fell from -28.1 to -6.5 bpm.
+
+Two consequences worth stating plainly:
+
+- **The results table below is no longer comparable with the rPPG-Toolbox tables.**
+  `postprocess.heart_rate` is still the toolbox's own argmax and is still tested
+  for parity, but it is no longer what `evaluate` reports.
+- Among the spectral variants the only real gain was **zero-padding**, not the
+  window function and not sub-bin interpolation: 8x padding moved MAE 3.35 -> 3.25,
+  while interpolation moved it 0.006 and a Hann window made it worse. An earlier
+  600-window sample ranked Hann best; it was drawn from ~33 consecutive clips and
+  did not survive a sample spread across all of them.
 
 ## Results
 
 MCD-rPPG plus UBFC-rPPG, 6 epochs, 300-frame windows, batch 4, subject-grouped
-85/10/5, last epoch. Predates the pooled 90/3/7 split and MR-NIRP, so it is a
-record of that run rather than of the current default.
+85/10/5, last epoch. Predates the pooled 90/3/7 split and MR-NIRP, **and was
+measured with the spectral-peak readout that the section above replaced**, so it
+is a record of that run rather than of the current default. Re-running `train`
+regenerates it under the interval readout.
 
 | split | MAE | RMSE | rho | MACC | SNR | n |
 |---|---|---|---|---|---|---|
@@ -154,7 +198,8 @@ The split and the heart-rate readout band differ from that work, so the comparis
 is indicative rather than exact. That work reads heart rate over 0.5-3 Hz on
 10-second segments; this implementation uses 45-150 bpm.
 
-Training loss fell 3.370, 2.560, 2.336, 2.175, 2.036, 1.949 across the six epochs.
+Training loss fell 3.370, 2.560, 2.336, 2.175, 2.036, 1.949 across the six epochs,
+at `alpha=0.2`, so the totals are not comparable with a run at the current 0.8.
 Dev loss fell 2.919 to 2.200 and remained below training loss throughout. The
 temporal term fell from 0.774 to 0.575, corresponding to a waveform Pearson
 correlation of 0.226 to 0.425.
@@ -176,7 +221,7 @@ mismatch raises rather than continuing a different schedule without notice.
 ## Tests
 
 ```bash
-uv run python -m pytest tests/ -q     # 391 tests, requires an idle GPU
+uv run python -m pytest tests/ -q     # 487 tests, requires an idle GPU
 ```
 
 One test file per module, named for the paper equation it constrains. Several are

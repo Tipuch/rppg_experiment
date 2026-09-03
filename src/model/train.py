@@ -48,7 +48,6 @@ from .evaluate import evaluate, format_metrics, per_source, per_subject, summari
 
 # CLBP-300's five clips ship as plain .mov files with the labels encoded in the
 # filename and no waveform at all, so they cannot support per-frame supervision.
-NO_WAVEFORM_SOURCES = ("clbp300",)
 from .losses import DEFAULT_ALPHA, DEFAULT_BETA, composite_loss
 
 
@@ -389,17 +388,7 @@ def build_splits(cfg: TrainConfig, manifest_path: Path) -> dict[str, pl.DataFram
     number of recordings per side and the wrong number of examples.
     """
     manifest = load_manifest(manifest_path)
-    usable = tuple(
-        s for s in manifest["source"].unique().to_list()
-        if s not in NO_WAVEFORM_SOURCES
-    )
-    no_waveform = manifest.filter(
-        ~pl.col("source").is_in(list(usable))
-    )["source"].unique().to_list()
-    if no_waveform:
-        n = manifest.filter(pl.col("source").is_in(no_waveform)).height
-        print(f"  dropped {n} clips with no waveform to supervise on "
-              f"({', '.join(sorted(no_waveform))})")
+    usable = tuple(manifest["source"].unique().to_list())
 
     keep = cfg.sources or usable
     if cfg.sources:

@@ -15,7 +15,6 @@ import pytest
 
 from src.model.predict import (
     analyse,
-    beats,
     config_from_checkpoint,
     latest_checkpoint,
     stitch,
@@ -91,34 +90,6 @@ def test_stitch_survives_a_flat_window():
     assert np.allclose(trace[60:], 0.0)
 
 
-def test_beats_never_finds_two_peaks_inside_one_cycle():
-    """The spacing floor is the period of 2.5 Hz, the top of the reporting band."""
-    trace = _tone(150, 300)
-    found = beats(trace)
-    assert len(found) >= 2
-    assert np.diff(found).min() >= FPS / 2.5 - 1
-
-
-def test_beats_returns_empty_on_a_degenerate_trace():
-    assert len(beats(np.zeros(4))) == 0
-    assert len(beats(np.full(300, np.nan))) == 0
-
-
-@pytest.mark.parametrize("bpm", [55.0, 72.0, 110.0, 145.0])
-def test_both_rates_recover_a_known_tone(bpm):
-    """Spectral and inter-beat agree, and both land on the tone that went in."""
-    windows = np.stack([
-        _tone(bpm, 300, phase=2 * math.pi * (bpm / 60.0) * (i * 300 / FPS))
-        for i in range(2)
-    ])
-    result = analyse(windows, FPS)
-    assert result["bpm_fft"] == pytest.approx(bpm, abs=1.5)
-    assert result["bpm_beats"] == pytest.approx(bpm, abs=1.0)
-    assert result["per_window_bpm"] == pytest.approx(bpm, abs=2.0)
-    assert result["seconds"] == pytest.approx(20.0)
-    assert result["seams"] == [300]
-
-
 def test_analyse_reports_nan_beats_rather_than_dividing_by_nothing():
     result = analyse(np.zeros((1, 300)), FPS)
     assert math.isnan(result["bpm_beats"])
@@ -142,3 +113,18 @@ def test_analyse_omits_the_truth_terms_when_there_is_none():
     result = analyse(np.stack([_tone(72.0, 300)]), FPS)
     assert "truth" not in result
     assert "bpm_true" not in result
+
+
+@pytest.mark.parametrize("bpm", [55.0, 72.0, 110.0, 145.0])
+def test_both_rates_recover_a_known_tone(bpm):
+    """Spectral and inter-beat agree, and both land on the tone that went in."""
+    windows = np.stack([
+        _tone(bpm, 300, phase=2 * math.pi * (bpm / 60.0) * (i * 300 / FPS))
+        for i in range(2)
+    ])
+    result = analyse(windows, FPS)
+    assert result["bpm_fft"] == pytest.approx(bpm, abs=1.5)
+    assert result["bpm_beats"] == pytest.approx(bpm, abs=1.0)
+    assert result["per_window_bpm"] == pytest.approx(bpm, abs=2.0)
+    assert result["seconds"] == pytest.approx(20.0)
+    assert result["seams"] == [300]
