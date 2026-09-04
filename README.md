@@ -56,7 +56,9 @@ video -> ffmpeg decode at 30 fps, face box cropped inside the filter graph
       -> PGA                         Gaussian skin prior, channel-wise gating
       -> 4 x [Mamba + CAM, DF-FFN]   space is collapsed; a pure time series
       -> 1D conv head                one BVP sample per input frame
-      -> Butterworth 0.75-2.5 Hz + beat intervals -> heart rate
+      -> two bands                   0.75-2.5 Hz to report a rate in
+                                     0.75-4.0 Hz to find beats in, by MSPTD
+      -> middle of three             spectral peak, median IBI, mean IBI
 ```
 
 ## Commands
@@ -77,8 +79,14 @@ uv run python -m src.cli baseline  # POS and CHROM on the test windows
 uv run python -m src.cli train     # fit the corpora, 50 epochs, then score
 uv run python -m src.cli predict   # run one video through a model, plot the pulse
 uv run python -m src.cli readout   # score every heart-rate readout on a labelled split
+uv run python -m src.cli evaluate  # re-score a checkpoint on a split, without retraining
 uv run python tools/plot_loss.py build/runs/<name>
 ```
+
+`evaluate` exists because the tables under Results go stale without the model
+changing. Every number in them passes through `postprocess.compare`, so altering the
+reported readout or the beat detector invalidates them, and `train` -- which writes
+them at the end of a fit -- is not something to re-run for a post-processing change.
 
 `clips` runs YuNet once per clip for the face box and SegFace once for a median
 skin mask. Both are too slow to run per batch, so their output is written to the
@@ -140,28 +148,58 @@ not comparable term by term.
 
 ## Reading heart rate off the waveform
 
-Heart rate is **the median inter-beat interval** of the predicted BVP: band-pass,
-detect one peak per cardiac cycle, interpolate each peak's position to sub-frame
-accuracy, difference them, take the median. This is what pulse oximeters and wrist
-wearables display, and `src.model.postprocess.interval_hr` is the function every
-number below comes through.
+Heart rate is **the middle of three readouts**: the dominant spectral peak, the
+median inter-beat interval, and the mean inter-beat interval. Band-pass, detect one
+peak per cardiac cycle, interpolate each peak's position to sub-frame accuracy, read
+the rate all three ways, return the median of the three.
+`src.model.postprocess.reported_hr` is the function every number below comes through.
 
-It replaced the dominant spectral peak on measurement. `src.cli readout` runs one
-forward pass over a labelled split, caches it, and scores every candidate readout
-against contact PPG. Over the 1569 test windows in `build/readout_test_s900.npz`,
-strided so the sample spans all 265 test clips:
+Two bands are in play. Rates are **reported** in 0.75-2.5 Hz, which is 45-150 bpm and
+what both source papers specify. Beats are **detected** in 0.75-4 Hz by MSPTD, ported
+from ppg-beats in `src/model/msptd.py` -- Bishop and Ercole 2018, benchmarked as one of
+the two best open-source PPG beat detectors by Charlton et al., *Detecting beats in the
+photoplethysmogram*, Physiol. Meas. 43(8) 085007 (2022),
+[doi:10.1088/1361-6579/ac826d](https://doi.org/10.1088/1361-6579/ac826d). Detecting in
+a wider band than the one rates are read in is that group's practice: harmonics are
+what make a pulse a shape rather than a sinusoid, and a shape is what separates a beat
+from a dicrotic notch.
+
+Each member has one failure the other two do not share. The spectrum locks onto a
+harmonic or a subharmonic and misses by tens of bpm. Beat timing counts a dicrotic
+notch as a beat. The mean interval collapses to `(last - first) / (N - 1)`, so a
+single spurious peak moves it by a whole 1/(N-1) of the rate -- 6 bpm on a 10 s window
+at 72 bpm. Taking the middle value discards whichever member is furthest out, which
+is the one that failed, without needing to know which it was.
+
+`src.cli readout` runs one forward pass over a labelled split, caches it, and scores
+every candidate readout against contact PPG. Over the 1569 test windows in
+`build/readout_test_s900.npz`, strided so the sample spans all 265 test clips:
 
 | readout | MAE | RMSE | rho |
 |---|---|---|---|
-| interval, median IBI | 3.70 | **6.60** | **0.857** |
+| **median of three (reported)** | 3.41 | 7.28 | 0.834 |
+| mean of three | 3.43 | **7.14** | **0.839** |
 | spectral peak, rectangular, 8x pad | **3.25** | 8.01 | 0.800 |
 | spectral peak, toolbox argmax | 3.35 | 8.18 | 0.793 |
 | spectral peak, Hann, 8x pad | 3.39 | 8.04 | 0.804 |
+| interval, median IBI | 3.86 | 7.73 | 0.821 |
+| interval, mean IBI | 4.03 | 8.00 | 0.795 |
 
-The interval readout has the highest MAE and the lowest RMSE, by 19%: fewer large
-misses, slightly more small ones. rho -- whether the readout tracks the rate across
-windows -- rises from 0.793 to 0.857. On the one clip inspected by hand with
-contact PPG, the error fell from -28.1 to -6.5 bpm.
+The vote beats each of its own members on RMSE and rho, which is what it is for: the
+spectral group sits at RMSE 8.0-8.2 with rho 0.79-0.80 and the interval group at
+7.7-8.0 with rho 0.80-0.82, and the middle value discards whichever one failed.
+
+It does not beat the *mean* of the same three, which leads by 0.15 RMSE and 0.005 rho.
+Under the previous beat detector the median led on all three, so this ordering is a
+property of the current detection band rather than a settled result.
+
+**These numbers are worse than the configuration they replaced.** With `find_peaks`
+over 0.75-2.5 Hz the same sweep gave 3.29 / 6.23 / 0.870. Detecting beats in 0.75-4 Hz
+was chosen anyway, for a reason the sweep cannot price: 2.5 Hz is 150 bpm, and a
+readout that cannot report a tachycardia is wrong in a way this split does not
+penalise. Its contact-PPG rate has a p99 of 118 bpm, and 7 of 1569 windows sit above
+150 bpm. `src/model/postprocess.py` records the full band sweep beside
+`DETECTION_LOW_HZ`.
 
 Two consequences:
 
@@ -177,43 +215,107 @@ Two consequences:
 ### The dicrotic notch, counted as a beat
 
 Beat timing has one failure the spectral readout does not, and it appears in the
-labels as well as in the predictions. The dicrotic notch -- the aortic valve
-closing, present in a normal pulse -- is a second local maximum on the diastolic
-decay. At 66 bpm it lands about 15 frames after the systolic peak, past the
-12-frame spacing floor `beats` applies, so `find_peaks` returns 17 peaks for 10
-cycles. More than half the intervals are then half-cycles and the median reads
-115 bpm for a 66 bpm pulse.
+labels as well as in the predictions. The dicrotic notch -- the aortic valve closing,
+present in a normal pulse -- is a second local maximum on the diastolic decay. At
+66 bpm it lands about 15 frames after the systolic peak, so a detector that separates
+beats by a minimum spacing counts it as one: `find_peaks` with a 12-frame floor returns
+17 peaks for 10 cycles, more than half the intervals are then half-cycles, and the
+median reads 115 bpm for a 66 bpm pulse.
 
 It is intermittent within one recording, because the notch grows and shrinks with
-perfusion, so the same subject reads correctly in the next window. On the pooled
-test split it affects 44 of 4482 contact-PPG windows: 39 MCD, 5 MR-NIRP, 0 UBFC.
-Those 5 were 12% of MR-NIRP's windows, enough to move that corpus to 6.79 bpm MAE
-and rho -0.07 while the predicted waveforms matched their targets at MACC 0.9.
+perfusion, so the same subject reads correctly in the next window. Measured under that
+detector it affected 44 of 4482 contact-PPG windows: 39 MCD, 5 MR-NIRP, 0 UBFC. Those
+5 were 12% of MR-NIRP's windows, enough to move that corpus to 6.79 bpm MAE and
+rho -0.07 while the predicted waveforms matched their targets at MACC 0.9. Those counts
+have not been re-measured under the current detector.
 
-`beats` repairs it by keeping only peaks above half the median prominence, and only
-when beat timing claims a rate 1.4x the spectral peak or higher. The spectrum of a
-115 bpm pulse peaks at 115, so that ratio indicates double-counting. The floor is
-conditional because on a noisy predicted waveform an unconditional one discards
-real beats: over the 788 windows in `build/readout_test.npz` it cost 0.34 bpm MAE
-and 1.4 bpm RMSE. Conditional, the same sweep improves (MAE 3.81 -> 3.79,
-RMSE 6.71 -> 6.65, rho 0.858 -> 0.862), the guard fires on 0.56% of test windows,
-and label inconsistency falls from 44 windows to 27.
+**MSPTD replaced it.** A minimum spacing cannot tell a notch from a beat, and the fix
+that used to sit on top of it -- keep only peaks above half the median prominence, and
+only when beat timing claims a rate 1.4x the spectral peak -- was a threshold patching
+a detector with no notion of scale. Both constants are gone.
+
+MSPTD asks a different question. For each half-width k it marks every sample larger
+than the samples k before and k after it; the scale with the most marks is the one that
+best matches the signal's own periodicity, and a sample is a beat only if it is marked
+at every scale up to that one. A notch fails that at the scale the pulse rate wins. It
+is `src/model/msptd.py`, a port of `msptdfastv2_beat_detector.m` from ppg-beats.
+
+On a 20 s notched pulse with the notch at 0.4 of the cycle, against the true cycle
+count:
+
+| bpm | cycles | MSPTD | find_peaks + guard |
+|---|---|---|---|
+| 45 | 15.0 | **14** | 31 |
+| 55 | 18.3 | **17** | 19 |
+| 75 | 25.0 | **24** | 25 |
+| 105 | 35.0 | **34** | 35 |
+| 140 | 46.7 | **46** | 47 |
+| 160 | 53.3 | **52** | 27 |
+
+MSPTD is within one beat everywhere -- it drops the leading partial cycle, consistently.
+The old pair breaks at 45 bpm, where 0.75 Hz *is* 45 bpm and its band-pass corner sits
+on the signal, and again at 160.
+
+**It has one limit, and no scale-based method can do better.** A notch at exactly half
+the cycle is an evenly spaced second peak train at twice the pulse rate. No scale marks
+the beats without also marking the notches, so the algorithm locks onto the doubled
+rhythm: at 85 bpm it returns about twice the true count. Real notches fall at 0.35-0.45
+of the cycle and at 0.4 the same signal reads correctly at every rate above.
+`tests/test_msptd.py` pins the working range and that limit.
+
+**On real predictions it costs accuracy rather than buying it.** Detector swapped with
+the band held at 0.75-2.5 Hz, `interval` readout over the same 1569 windows:
+
+| detector | MAE | RMSE | rho |
+|---|---|---|---|
+| find_peaks + guard | 3.65 | **6.42** | **0.866** |
+| MSPTD | **3.62** | 6.86 | 0.849 |
+
+Moving detection to 0.75-4 Hz costs more again, to 3.86 / 7.73 / 0.821. Both were
+adopted anyway, for the headroom argued above: this split has a p99 of 118 bpm and
+7 of 1569 windows above 150, so it prices a synthetic notch sweep at 45 and 160 bpm at
+nothing. `tests/test_real_windows.py` pins that limitation as a test, and will fail if
+a regenerated dump ever does sample a tachycardia -- at which point the comparison is
+worth re-running rather than inherited.
 
 ## Results
 
-Pooled test split, 4482 windows of 300 frames, batch 4, `alpha=0.8`, interval
-readout, 45-149 bpm. Checkpoint at epoch 48 of a 50-epoch schedule
-(`build/runs/cfmamba/eval_test_last.json`).
+Pooled test split, 4482 windows of 300 frames, batch 4, `alpha=0.8`, the
+middle-of-three readout over 45-150 bpm with beats detected over 45-240 bpm.
+Checkpoint at epoch 48 of a 50-epoch schedule. Regenerate with
+`uv run python -m src.cli evaluate --split test`, which rewrites
+`build/runs/cfmamba/eval_test_last.json`.
 
 | split | MAE | RMSE | rho | MACC | SNR | n |
 |---|---|---|---|---|---|---|
-| test, all | 2.75 | 5.20 | +0.912 | 0.833 | +2.69 dB | 4482 |
-| test, MCD | 2.77 | 5.23 | +0.909 | 0.832 | +2.66 dB | 4419 |
-| test, MR-NIRP | 1.34 | 2.27 | +0.951 | 0.925 | +5.19 dB | 42 |
-| test, UBFC | 1.44 | 1.96 | +0.997 | 0.832 | +3.93 dB | 21 |
+| test, all | 2.64 | 6.74 | +0.864 | 0.833 | +2.57 dB | 4482 |
+| test, MCD | 2.67 | 6.79 | +0.860 | 0.832 | +2.54 dB | 4419 |
+| test, MR-NIRP | 0.54 | 0.68 | +0.995 | 0.925 | +5.27 dB | 42 |
+| test, UBFC | 0.82 | 1.06 | +0.999 | 0.832 | +3.63 dB | 21 |
 
 MCD is 98.6% of those windows, so the aggregate is close to the MCD row by
 construction. The MR-NIRP and UBFC rows are 42 and 21 windows.
+
+**The readout change moved these two ways.** Against the previous configuration --
+the median inter-beat interval alone, with beats found by `find_peaks` over
+0.75-2.5 Hz -- the aggregate MAE improved from 2.75 to 2.64 while RMSE went from 5.20
+to 6.74 and rho from 0.912 to 0.864. MACC is unchanged at 0.833, as it must be: it
+compares waveforms and does not pass through a readout.
+
+The two corpora with a recoverable pulse moved the other way from the aggregate:
+
+| split | MAE | RMSE | rho |
+|---|---|---|---|
+| MR-NIRP, before | 1.34 | 2.27 | +0.951 |
+| MR-NIRP, now | **0.54** | **0.68** | **+0.995** |
+| UBFC, before | 1.44 | 1.96 | +0.997 |
+| UBFC, now | **0.82** | **1.06** | **+0.999** |
+
+MR-NIRP's RMSE fell by a factor of 3.3 and UBFC's by 1.8. The aggregate follows MCD
+because MCD is 98.6% of the windows, and MCD is the corpus this project audited at a
+4.4% pass rate and documents under "video without a recoverable pulse" in
+DATASETS.md. Whether the aggregate or the two clean rows is the more informative
+number is a judgement, not a measurement, and both are here rather than one.
 
 Published in-dataset results on MCD-rPPG, from Egorov et al. (2025), which reports
 MAE only:
@@ -229,9 +331,10 @@ MAE only:
 | PBV, training-free | 15.37 |
 
 The split and the heart-rate range differ from that work, so the comparison is
-indicative rather than exact. That work reads heart rate over 0.5-3 Hz on
-10-second segments; this implementation uses 45-149 bpm and the interval readout,
-which is not the readout those tables were produced with.
+indicative rather than exact. That work reads heart rate over 0.5-3 Hz on 10-second
+segments. This implementation reports over 0.75-2.5 Hz (45-150 bpm), detects beats
+over 0.75-4 Hz, and reads the rate as the middle of three readouts -- none of which is
+what those tables were produced with.
 
 An earlier run at these settings settled at a constant output, with the temporal
 term at 1.000 and dev MAE 30.97. Run-to-run variance at this learning rate is
@@ -255,7 +358,7 @@ pointing `predict --model` or `readout --model` at it.
 ## Tests
 
 ```bash
-uv run python -m pytest tests/ -q     # 501 tests, requires an idle GPU
+uv run python -m pytest tests/ -q     # 586 tests, requires an idle GPU
 ```
 
 One test file per module, named for the paper equation it constrains. Several are
@@ -276,6 +379,28 @@ regressions for faults that produced no error:
 
 `check_targets_are_supervised` samples 64 training windows before the model is
 built and raises if more than 20% have flat targets.
+
+### Synthetic tests are not enough for the post-processing
+
+`tests/test_real_windows.py` reads the cached forward pass in
+`build/readout_test_s900.npz` and skips when it is absent, because `build/` is not
+distributed. It exists because three post-processing decisions were made on signals
+built from a formula and each one behaved differently on real predictions:
+
+- a beat detector that read a synthetic notched pulse to within one beat at every rate
+  from 45 to 160 bpm cost 0.44 bpm of RMSE on real predictions at the same band, and
+  1.31 at a wider one
+- a quality metric that cleanly separated a tone from white noise could not separate a
+  prediction from white noise: medians 0.853 and 0.829, distributions overlapping
+  across their whole range
+- beat markers located in one band and drawn in another sat off the peak for 3152 of
+  3785 real beats, while the synthetic test for the same fault passed before the fix
+
+So that file pins the numbers the sweep above quotes -- MAE, RMSE and rho for the
+reported readout, zero dropped windows, and the marker alignment -- and asserts the
+dump is still the 1569-window split those thresholds were measured on. It also records
+that the split has a p99 of 118 bpm, so a later dump that does sample a tachycardia
+fails the test and prompts the band comparison to be re-run rather than inherited.
 
 ## Documentation
 

@@ -92,7 +92,7 @@ def test_stitch_survives_a_flat_window():
 
 def test_analyse_reports_nan_beats_rather_than_dividing_by_nothing():
     result = analyse(np.zeros((1, 300)), FPS)
-    assert math.isnan(result["bpm_beats"])
+    assert math.isnan(result["bpm_reported"])
     assert result["seams"] == []
 
 
@@ -124,7 +124,62 @@ def test_both_rates_recover_a_known_tone(bpm):
     ])
     result = analyse(windows, FPS)
     assert result["bpm_fft"] == pytest.approx(bpm, abs=1.5)
-    assert result["bpm_beats"] == pytest.approx(bpm, abs=1.0)
+    assert result["bpm_reported"] == pytest.approx(bpm, abs=1.0)
     assert result["per_window_bpm"] == pytest.approx(bpm, abs=2.0)
     assert result["seconds"] == pytest.approx(20.0)
     assert result["seams"] == [300]
+
+
+def _notched(bpm: float, n: int, fps: float = FPS) -> np.ndarray:
+    """A pulse with a dicrotic notch, which is where the two bands differ most.
+
+    A clean tone is nearly identical under either filter, so it cannot show the
+    mismatch this test is about. The notch is second-harmonic content: the detection
+    band keeps it and the reporting band does not, so the two traces have peaks a
+    frame apart.
+    """
+    period = 60.0 / bpm * fps
+    t = np.arange(n)
+    phase = np.mod(t, period) / period
+    return (
+        np.exp(-((phase - 0.12) ** 2) / (2 * 0.055**2))
+        + 0.35 * np.exp(-((phase - 0.4) ** 2) / (2 * 0.055**2))
+    )
+
+
+def _on_a_local_max(trace: np.ndarray, peaks: np.ndarray) -> tuple[int, int]:
+    """How many of `peaks` are a local maximum of `trace`, and how many were checked."""
+    inner = peaks[(peaks > 0) & (peaks < trace.size - 1)]
+    good = (trace[inner] >= trace[inner - 1]) & (trace[inner] >= trace[inner + 1])
+    return int(good.sum()), int(inner.size)
+
+
+def test_analyse_marks_peaks_on_the_trace_it_returns():
+    """`peaks` and `trace` are returned together and must agree with each other.
+
+    Beats are found in 0.75-4 Hz and `trace` is the 0.75-2.5 Hz reporting band. The
+    two waveforms correlate at 0.993 on one measured clip but differ pointwise by up
+    to half a standard deviation, so a sample that is the maximum in one can have a
+    higher neighbour in the other. A caller reading `trace[peaks]` as beat amplitudes
+    would be reading the flank, and the plot draws its markers exactly that way.
+
+    Snapping changes no rate: `interval_hr` detects and differences on the detection
+    band internally and never sees these indices.
+
+    A clean or lightly notched synthetic barely shows this -- the two filters agree on
+    a smooth signal. `test_real_windows.py` is where it is measured on predictions.
+    """
+    windows = np.stack([_notched(72.0, 300), _notched(72.0, 300)])
+    result = analyse(windows, FPS)
+    good, checked = _on_a_local_max(result["trace"], result["peaks"])
+    assert checked > 8
+    assert good == checked
+
+
+def test_snapping_the_markers_leaves_the_rate_alone():
+    """The guard on the fix. If snapping ever moved a reported number, it would be
+    doing more than aligning dots."""
+    windows = np.stack([_notched(72.0, 300), _notched(72.0, 300)])
+    result = analyse(windows, FPS)
+    assert result["bpm_reported"] == pytest.approx(72.0, abs=2.0)
+    assert len(result["peaks"]) == pytest.approx(24, abs=2)

@@ -138,3 +138,35 @@ def test_a_run_without_loss_terms_omits_them_rather_than_reporting_zero() -> Non
     assert "loss" not in m
     assert "time" not in m
     assert "freq" not in m
+
+
+def test_the_evaluate_command_is_registered_and_needs_no_training() -> None:
+    """The tables in README.md and MODEL_CARD.md go stale whenever the reported
+    readout or the beat detector changes, because every number in them passes through
+    `postprocess.compare`. Before this command the only way to refresh them was a
+    50-epoch fit, so they stayed stale. It is registered here so the entry point
+    cannot be removed without a failure."""
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    result = CliRunner().invoke(cli, ["evaluate", "--help"])
+    assert result.exit_code == 0
+    assert "without retraining" in result.output
+    for option in ("--split", "--model", "--manifest", "--out"):
+        assert option in result.output
+
+
+def test_the_evaluate_command_says_what_it_needs_rather_than_crashing() -> None:
+    """Mamba-3's scan kernel has no CPU path, so this cannot run without a card. The
+    message has to say that rather than surfacing a Triton error."""
+    import torch
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    if torch.cuda.is_available():
+        pytest.skip("a card is present, so the guard cannot be exercised")
+    result = CliRunner().invoke(cli, ["evaluate"])
+    assert result.exit_code != 0
+    assert "CUDA required" in result.output

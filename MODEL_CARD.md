@@ -136,15 +136,24 @@ their own published terms.
 
 ## Evaluation
 
-Pooled test split, 4482 windows of 300 frames, checkpoint at 48 of 50 epochs,
-interval (median IBI) readout, 45-149 bpm.
+Pooled test split, 4482 windows of 300 frames, checkpoint at 48 of 50 epochs.
+Heart rate is the middle of three readouts over 45-150 bpm, with beats detected by
+MSPTD over 45-240 bpm. Regenerate with `uv run python -m src.cli evaluate`.
 
 | split | MAE (bpm) | RMSE | rho | MACC | SNR | n |
 |---|---|---|---|---|---|---|
-| test, all | 2.75 | 5.20 | 0.912 | 0.833 | +2.69 dB | 4482 |
-| test, MCD | 2.77 | 5.23 | 0.909 | 0.832 | +2.66 dB | 4419 |
-| test, MR-NIRP | 1.34 | 2.27 | 0.951 | 0.925 | +5.19 dB | 42 |
-| test, UBFC | 1.44 | 1.96 | 0.997 | 0.832 | +3.93 dB | 21 |
+| test, all | 2.64 | 6.74 | 0.864 | 0.833 | +2.57 dB | 4482 |
+| test, MCD | 2.67 | 6.79 | 0.860 | 0.832 | +2.54 dB | 4419 |
+| test, MR-NIRP | 0.54 | 0.68 | 0.995 | 0.925 | +5.27 dB | 42 |
+| test, UBFC | 0.82 | 1.06 | 0.999 | 0.832 | +3.63 dB | 21 |
+
+MCD is 98.6% of the windows, so the aggregate follows its row. Against the previous
+configuration -- median inter-beat interval alone, beats from `find_peaks` over
+45-150 bpm -- the aggregate MAE improved from 2.75 to 2.64 while RMSE went 5.20 to
+6.74 and rho 0.912 to 0.864. The two corpora with a recoverable pulse moved the other
+way: MR-NIRP's RMSE fell from 2.27 to 0.68 and UBFC's from 1.96 to 1.06. MACC is
+unchanged, as it must be -- it compares waveforms and does not pass through a readout.
+README.md sets out that trade.
 
 ### Readout comparison
 
@@ -152,10 +161,13 @@ Over 1569 strided test windows spanning all 265 test clips:
 
 | readout | MAE | RMSE | rho |
 |---|---|---|---|
-| interval, median IBI (**default**) | 3.70 | **6.60** | **0.857** |
+| middle of three (**default**) | 3.41 | 7.28 | 0.834 |
+| mean of three | 3.43 | **7.14** | **0.839** |
 | spectral peak, rectangular, 8x pad | **3.25** | 8.01 | 0.800 |
 | spectral peak, toolbox argmax | 3.35 | 8.18 | 0.793 |
 | spectral peak, Hann, 8x pad | 3.39 | 8.04 | 0.804 |
+| interval, median IBI | 3.86 | 7.73 | 0.821 |
+| interval, mean IBI | 4.03 | 8.00 | 0.795 |
 
 ### Published comparison
 

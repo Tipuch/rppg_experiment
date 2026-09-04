@@ -20,7 +20,16 @@ from torch.utils.data import DataLoader
 from ..paths import BUILD_ROOT
 from .cfmamba import CFMambaPhys
 from .dataset import TARGET_FPS, WindowDataset, expand_to_segments
-from .postprocess import bandpass, beats, heart_rate, interval_hr, macc
+from .postprocess import (
+    align_to_peaks,
+    bandpass,
+    beats,
+    heart_rate,
+    hrv,
+    macc,
+    reported_hr,
+    respiratory_rate,
+)
 from .train import TrainConfig, build_model, load_checkpoint
 from .waveform import load_ppg
 
@@ -217,21 +226,33 @@ def analyse(
     """
     trace = stitch(windows)
     filtered = bandpass(trace, fps)
-    peaks = beats(filtered, fps)
+    # Everything but the spectral cross-check reads the unfiltered stitch. Beats,
+    # variability, breathing and the quality number all need content the cardiac
+    # band-pass removes -- beats and shape live in 0.75-4 Hz -- and handing them
+    # `filtered` would give them a trace already made sinusoidal.
+    #
+    # The beats are then aligned back onto `filtered`, because that is the trace this
+    # returns beside them: the plot draws its markers there, and a caller reading
+    # `trace[peaks]` as beat amplitudes reads there too. No rate depends on the
+    # alignment -- `interval_hr` and `reported_hr` detect and difference on the
+    # detection band internally and never see these indices.
+    peaks = align_to_peaks(filtered, beats(trace, fps), fps)
     per_window = np.array(
-        [interval_hr(w, fps) for w in windows], dtype=np.float64
+        [reported_hr(w, fps) for w in windows], dtype=np.float64
     )
     return {
         "trace": filtered,
         "peaks": peaks,
         # The reported rate. `bpm_fft` sits beside it as the spectral cross-check:
         # the two disagreeing indicates the window holds more than one rhythm.
-        "bpm_beats": interval_hr(filtered, fps, filtered=True),
+        "bpm_reported": reported_hr(trace, fps),
         "bpm_fft": heart_rate(filtered, fps, filtered=True),
         "per_window_bpm": per_window,
         "seconds": len(filtered) / fps,
         # Where one window ends and the next begins, in samples.
         "seams": [i * windows.shape[1] for i in range(1, len(windows))],
+        "hrv": hrv(trace, fps),
+        "respiration": respiratory_rate(trace, fps),
     } | _truth_terms(truth, fps, filtered)
 
 
@@ -239,10 +260,13 @@ def _truth_terms(truth: np.ndarray | None, fps: float, predicted: np.ndarray) ->
     """The contact-PPG trace and the error against it, or empty when there is none."""
     if truth is None:
         return {}
-    reference = bandpass(stitch(truth), fps)
-    bpm_true = interval_hr(reference, fps, filtered=True)
+    raw = stitch(truth)
+    # The rate off the raw stitch, for the reason `analyse` gives; MACC and the
+    # plotted trace off the band-passed one, because MACC is defined on it and the
+    # plot compares two traces that must have had the same filter applied.
+    reference = bandpass(raw, fps)
     return {
         "truth": reference,
-        "bpm_true": bpm_true,
+        "bpm_true": reported_hr(raw, fps),
         "macc": float(macc(predicted, reference)),
     }

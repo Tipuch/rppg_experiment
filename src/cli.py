@@ -665,10 +665,13 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
     invariant to a positive scale factor, so each window is z-scored before the
     stitch and only the timing carries meaning.
 
-    Two rates are reported: the median inter-beat interval of the marked peaks,
-    which is what this project's tables quote, and the dominant cardiac-band
-    spectral peak as a cross-check. The two disagree when the window holds more
-    than one rhythm. `src.cli readout` scores both against contact PPG.
+    The reported rate is `postprocess.reported_hr`: the middle of the spectral peak,
+    the median inter-beat interval and the mean inter-beat interval. Each member has
+    a failure the other two do not share, and the middle value discards whichever one
+    failed. The spectral peak is printed beside it because it is one of the three:
+    the two differing says the vote was split and the window holds more than one
+    rhythm. `src.cli readout` scores every member and both combinations against
+    contact PPG.
     """
     import numpy as np
     import torch
@@ -714,22 +717,50 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
 
     per_window = result["per_window_bpm"]
     finite = per_window[np.isfinite(per_window)]
-    click.echo(f"\n  {result['bpm_beats']:.1f} bpm  median inter-beat interval "
-               f"over {result['seconds']:.1f}s, {len(result['peaks'])} beats")
-    click.echo(f"  {result['bpm_fft']:.1f} bpm  dominant cardiac-band peak, "
-               f"the spectral cross-check")
+    click.echo(f"\n  {result['bpm_reported']:.1f} bpm  the reported readout: the "
+               f"middle of three, over {result['seconds']:.1f}s and "
+               f"{len(result['peaks'])} beats")
+    click.echo(f"  {result['bpm_fft']:.1f} bpm  dominant cardiac-band peak, one of "
+               f"the three and the one that splits the vote")
     if len(finite):
         click.echo(f"  per window: {finite.min():.1f}-{finite.max():.1f} bpm "
                    f"over {len(finite)} windows")
+    variability, breathing = result["hrv"], result["respiration"]
+    click.echo(f"\n  TMCC {variability['tmcc']:.3f}  beat-shape consistency. Read as "
+               f"context, not a pass mark: on the test split predicted windows "
+               f"median 0.85 and white noise 0.83")
+    if np.isfinite(variability["rmssd_ms"]):
+        click.echo(f"  RMSSD {variability['rmssd_ms']:.1f} ms, SDNN "
+                   f"{variability['sdnn_ms']:.1f} ms, pNN50 "
+                   f"{variability['pnn50'] * 100:.0f}%  over "
+                   f"{variability['n_beats']:.0f} beats")
+        click.echo("           band-passed variability reads about a third low; "
+                   "33 ms is one frame")
+    else:
+        from .model.postprocess import HRV_MIN_SECONDS
+        if variability["seconds"] < HRV_MIN_SECONDS:
+            why = (f"needs {HRV_MIN_SECONDS:.0f}s of beats for RMSSD to settle, "
+                   f"this is {variability['seconds']:.1f}s")
+        else:
+            why = "too few beats"
+        click.echo(f"  RMSSD --  withheld: {why}")
+    if np.isfinite(breathing["brpm"]):
+        click.echo(f"  {breathing['brpm']:.1f} breaths/min  RSA "
+                   f"{breathing['brpm_rsa']:.1f}, amplitude "
+                   f"{breathing['brpm_riav']:.1f} -- unvalidated, no paired labels")
+    else:
+        click.echo(f"  breathing --  withheld: needs 30s of beats, this is "
+                   f"{breathing['seconds']:.1f}s")
+
     if "bpm_true" in result:
         click.echo(f"\n  {result['bpm_true']:.1f} bpm  contact PPG over the same "
-                   f"windows  -> {result['bpm_beats'] - result['bpm_true']:+.1f} bpm, "
+                   f"windows  -> {result['bpm_reported'] - result['bpm_true']:+.1f} bpm, "
                    f"MACC {result['macc']:.3f}")
 
     out = out or BUILD_ROOT / "predict" / f"{predict_mod.clip_name(video)}.png"
     predict_plot.plot(
         result["trace"], result["peaks"], fps=TARGET_FPS, start_s=start,
-        bpm_fft=result["bpm_fft"], bpm_beats=result["bpm_beats"],
+        bpm_fft=result["bpm_fft"], bpm_reported=result["bpm_reported"],
         seams=result["seams"], title=video.name,
         subtitle=f"{checkpoint}  ·  {config.n_frames}-frame windows",
         out=out, truth=result.get("truth"), bpm_true=result.get("bpm_true"),
@@ -739,6 +770,84 @@ def predict(video: Path, model_path: Path | None, start: float, seconds: float,
     wave_path = out.with_name(f"{out.stem}_wave.npy")
     np.save(wave_path, result["trace"])
     click.echo(f"\nwrote {out} and {wave_path}")
+
+
+@cli.command()
+@click.option("--manifest", type=click.Path(exists=True, path_type=Path),
+              default=DEFAULT_MANIFEST, show_default=True)
+@click.option("--model", "model_path", type=click.Path(exists=True, path_type=Path),
+              default=None,
+              help="Checkpoint to score. Defaults to the most recently written "
+                   "build/runs/*/final.pt or last.pt.")
+@click.option("--split", type=click.Choice(["train", "dev", "test"]),
+              default="test", show_default=True)
+@click.option("--batch", type=int, default=4, show_default=True)
+@click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
+@click.option("--out", type=click.Path(path_type=Path), default=None,
+              help="JSON to write. Defaults to "
+                   "<run-dir>/eval_<split>_<checkpoint stem>.json.")
+def evaluate(manifest: Path, model_path: Path | None, split: str, batch: int,
+             workers: int, out: Path | None) -> None:
+    """Score a checkpoint on one split, without retraining it.
+
+    `train` already does this for the last epoch and writes the JSON that README.md
+    and MODEL_CARD.md quote. This exists because those tables can go stale without
+    the model changing: every number in them passes through `postprocess.compare`,
+    so changing the reported readout or the beat detector invalidates them, and the
+    only way to refresh them used to be a 50-epoch fit.
+
+    The same loader construction `train` uses for its test split -- `train=False`, so
+    no augmentation, non-overlapping windows, contact PPG returned.
+    """
+    import json
+
+    import torch
+
+    from .model.dataset import TARGET_FPS
+    from .model.evaluate import evaluate as run_eval
+    from .model.evaluate import format_metrics, per_source, per_subject, summarise
+    from .model.predict import latest_checkpoint, load_model
+    from .model.train import _loader, build_splits
+
+    if not torch.cuda.is_available():
+        raise click.ClickException(
+            "CUDA required: Mamba-3's scan kernel has no CPU path."
+        )
+
+    checkpoint = model_path or latest_checkpoint()
+    model, config, state = load_model(checkpoint)
+    config.batch_size, config.workers = batch, workers
+    click.echo(f"{checkpoint}  epoch {state.get('epoch', '?')}  "
+               f"{config.n_frames} frames per window")
+
+    splits = build_splits(config, manifest)
+    if split not in splits:
+        raise click.ClickException(
+            f"no {split} split in {manifest}; found {sorted(splits)}."
+        )
+    loader = _loader(splits[split], config, train=False)
+    click.echo(f"{splits[split].height} windows in {split}")
+
+    rows = run_eval(model, loader, "cuda", TARGET_FPS,
+                    alpha=config.alpha, beta=config.beta)
+    metrics = summarise(rows)
+    click.echo("\n" + format_metrics(split, metrics))
+    click.echo("\nby source:")
+    for name, per in per_source(rows):
+        click.echo(f"  {format_metrics(name, per)}")
+
+    out = out or checkpoint.parent / f"eval_{split}_{checkpoint.stem}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "checkpoint": str(checkpoint),
+        "manifest": str(manifest),
+        "epochs_completed": state.get("epoch"),
+        split: metrics,
+        "per_source": dict(per_source(rows)),
+        "per_subject": dict(per_subject(rows)),
+        "rows": rows,
+    }, indent=2))
+    click.echo(f"\nwrote {out}")
 
 
 @cli.command()
