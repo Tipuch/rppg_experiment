@@ -222,3 +222,56 @@ def test_refine_leaves_a_peak_at_the_edge_alone() -> None:
     is no parabola to take a vertex from."""
     trace = np.array([3.0, 1.0, 0.0, 1.0, 2.0])
     assert refine(trace, np.array([0, 4])) == pytest.approx([0.0, 4.0])
+
+
+def _pulse_with_dicrotic_notch(
+    bpm: float = 66.0, seconds: float = 10.0, notch: float = 0.35,
+    at: float = 0.5, fps: float = FPS,
+) -> np.ndarray:
+    """A pulse whose diastolic decay carries a second bump, as a real one does.
+
+    `notch` is the bump's height as a fraction of the systolic peak and `at` its
+    position within the cycle. Both are in the range a contact PPG shows: the
+    dicrotic notch is a closing aortic valve, not an artefact, and it grows and
+    shrinks within one recording as perfusion changes.
+
+    This is the shape that produced test-split heart rates of 107-118 bpm against
+    a 64-68 bpm pulse -- once the bump is a local maximum more than 12 frames from
+    the systolic peak, `find_peaks` counts it as a beat, and more than half the
+    intervals are then half-cycles.
+    """
+    period = 60.0 / bpm * fps
+    t = np.arange(int(seconds * fps))
+    phase = np.mod(t, period) / period
+    systolic = np.exp(-((phase - 0.12) ** 2) / (2 * 0.055**2))
+    dicrotic = notch * np.exp(-((phase - at) ** 2) / (2 * 0.055**2))
+    return systolic + dicrotic
+
+
+def test_beats_counts_one_peak_per_cycle_through_a_dicrotic_notch() -> None:
+    """11 cycles in 10 s at 66 bpm, not 22. A notch counted as a beat halves the
+    median interval, which reads as a rate 1.7x the truth."""
+    trace = bandpass(_pulse_with_dicrotic_notch(), FPS)
+    assert len(beats(trace, FPS)) == pytest.approx(11, abs=1)
+
+
+def test_interval_hr_reads_the_pulse_rate_not_the_notch_rate() -> None:
+    """The MR-NIRP and MCD failure, as a number: 66 bpm read back as 115."""
+    trace = _pulse_with_dicrotic_notch(bpm=66.0)
+    assert interval_hr(trace, FPS) == pytest.approx(66.0, abs=3.0)
+
+
+def test_the_notch_guard_leaves_a_clean_trace_untouched() -> None:
+    """Regression guard. The guard is a repair, so it must not fire on a trace
+    that needs none: 4478 of the 4482 test windows are already consistent, and a
+    readout that moves them is a worse readout whatever it does to the other 4."""
+    for bpm in (50.0, 72.0, 96.0, 145.0):
+        clean = bandpass(_tone(bpm), FPS)
+        assert interval_hr(clean, FPS, filtered=True) == pytest.approx(bpm, abs=2.0)
+
+
+def test_a_genuinely_fast_pulse_is_not_halved() -> None:
+    """Regression guard. The guard compares beat timing against the spectrum, so a
+    fast rate the spectrum agrees with must survive it."""
+    fast = bandpass(_pulse_with_dicrotic_notch(bpm=140.0), FPS)
+    assert interval_hr(fast, FPS, filtered=True) == pytest.approx(140.0, abs=5.0)

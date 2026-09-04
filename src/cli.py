@@ -629,8 +629,11 @@ def train(epochs: int, lr: float, weight_decay: float, warmup_frac: float,
     what the model actually sees.
 
     Dev is scored each epoch for the trajectory; test is scored once at the end.
-    There is no checkpoint selection -- both papers report the last epoch, so the
-    epoch budget has to be chosen in advance rather than tuned on the result.
+    The **reported** result is still the last epoch -- both papers report that, so
+    the epoch budget has to be chosen in advance rather than tuned on the result.
+    `<out>/best.pt` is written alongside it whenever an epoch is the run's lowest
+    dev loss, because last.pt cannot be rolled back to an earlier epoch later. It
+    is a separate artefact, scored only if you point --model at it.
 
     Results are broken out **per source**, which is required once the manifest
     keeps more than one corpus: under a straight 85/10/5, MCD-rPPG is 99.2% of the

@@ -121,6 +121,11 @@ class TrainConfig:
     # Continue from out_dir/last.pt instead of starting over. The schedule inputs
     # must match what the checkpoint was written under; see check_resumable.
     resume: bool = False
+    # Metric on the per-epoch dev pass that <out>/best.pt tracks; see best_index.
+    # Lower is better, so BEST_METRICS only. The dev pass is a subsample
+    # (dev_eval_segments), which makes this a noisy criterion -- best.pt is a second
+    # artefact, and the reported test number stays the last epoch's.
+    best_metric: str = "loss"
     out_dir: Path = field(default_factory=lambda: BUILD_ROOT / "runs" / "cfmamba")
 
 
@@ -277,6 +282,42 @@ def save_checkpoint(
         "steps_per_epoch": steps_per_epoch,
         "torch_rng": torch.get_rng_state(),
     }, path)
+
+
+# Metrics best.pt can select on. All lower-is-better; a higher-is-better metric
+# (corr, macc, snr) would select the *worst* epoch under this comparison, so it is
+# refused rather than silently minimised.
+BEST_METRICS = ("loss", "mae", "rmse")
+
+
+def best_index(
+    history: list[dict], split: str, metric: str = "loss"
+) -> int | None:
+    """Index in `history` of the epoch with the lowest dev `metric`, or None.
+
+    `last.pt` is overwritten every epoch, so the weights of a better earlier epoch
+    are gone the moment the next one finishes. Selection therefore has to happen
+    during the run: each epoch asks whether it is the best dev score so far.
+
+    Ties keep the earlier epoch. Only a strict improvement rewrites best.pt, so a
+    plateau does not rewrite 11 MB for weights that score the same.
+    """
+    if metric not in BEST_METRICS:
+        raise ValueError(
+            f"cannot select a checkpoint on {metric!r}: best.pt takes the lowest "
+            f"score, and only {', '.join(BEST_METRICS)} are lower-is-better."
+        )
+    best, at = float("inf"), None
+    for i, record in enumerate(history):
+        value = (record.get(split) or {}).get(metric)
+        # An absent or NaN metric is a measurement that did not happen, not a good
+        # one -- an epoch from before the dev pass existed, or one whose readout
+        # produced nothing.
+        if value is None or not math.isfinite(value):
+            continue
+        if value < best:
+            best, at = float(value), i
+    return at
 
 
 def load_checkpoint(path: Path) -> dict:
@@ -509,6 +550,12 @@ def train(
     start_epoch = 0
     history: list[dict] = []
     checkpoint = cfg.out_dir / "last.pt"
+    best_path = cfg.out_dir / "best.pt"
+    # Checked before the first epoch, not at its save, which is an hour in.
+    if cfg.best_metric not in BEST_METRICS:
+        raise RuntimeError(
+            f"best_metric {cfg.best_metric!r} is not one of {BEST_METRICS}."
+        )
     if cfg.resume:
         if not checkpoint.exists():
             raise RuntimeError(f"--resume given but {checkpoint} does not exist")
@@ -530,6 +577,15 @@ def train(
             )
         print(f"\nresumed from {checkpoint}: starting epoch {start_epoch} of "
               f"{cfg.epochs}, scheduler at step {scheduler.last_epoch}")
+        # The inherited history includes epochs whose weights are gone, and best.pt
+        # is compared against all of them. Say so: if nothing from here beats the
+        # score below, no best.pt is written at all.
+        at = best_index(history, watch_split, cfg.best_metric)
+        if at is not None:
+            score = history[at][watch_split][cfg.best_metric]
+            print(f"best {watch_split} {cfg.best_metric} so far is {score:.4f} at "
+                  f"epoch {history[at]['epoch']}, from before this resume. "
+                  f"{best_path.name} is written only by an epoch that beats it.")
     elif checkpoint.exists():
         print(f"\nnote: {checkpoint} exists and will be overwritten. "
               f"Pass --resume to continue it instead.")
@@ -634,10 +690,20 @@ def train(
                         scheduler=scheduler, epoch=epoch + 1, history=history,
                         config=result["config"], steps_per_epoch=total_steps)
 
+        # A second copy of the same payload whenever this epoch is the best dev
+        # score of the run, because last.pt cannot be rolled back to it later. Full
+        # checkpoint, not weights alone, so best.pt is loadable by the same readers.
+        is_best = best_index(history, watch, cfg.best_metric) == len(history) - 1
+        if is_best:
+            save_checkpoint(best_path, model=model, optimiser=optimiser,
+                            scheduler=scheduler, epoch=epoch + 1, history=history,
+                            config=result["config"], steps_per_epoch=total_steps)
+
         print(f"epoch {epoch:3d}  lr {record['lr']:.2e}  train {record['train_loss']:.4f} "
               f"(time {record['train_time']:.3f} freq {record['train_freq']:.3f}){gap}  "
               f"{format_metrics(watch, metrics)}  "
-              f"({record['seconds']:.0f}s, fetch {fetch_s:.0f}s)",
+              f"({record['seconds']:.0f}s, fetch {fetch_s:.0f}s)"
+              f"{'  *best' if is_best else ''}",
               flush=True)
 
     torch.save({"model": model.state_dict(), "epochs": cfg.epochs,

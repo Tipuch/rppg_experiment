@@ -166,6 +166,33 @@ Two consequences worth stating plainly:
   600-window sample ranked Hann best; it was drawn from ~33 consecutive clips and
   did not survive a sample spread across all of them.
 
+### The dicrotic notch, counted as a beat
+
+Beat timing has one failure the spectral readout does not, and it is in the
+*labels* as much as in the predictions. The dicrotic notch -- the aortic valve
+closing, present in every real pulse -- is a second local maximum on the
+diastolic decay. At 66 bpm it lands about 15 frames after the systolic peak,
+past the 12-frame spacing floor `beats` applies, so `find_peaks` returns 17
+peaks for 10 cycles. More than half the intervals are then half-cycles and the
+median reads **115 bpm against a 66 bpm pulse**.
+
+It is intermittent within one recording -- the notch grows and shrinks with
+perfusion -- so the same subject reads correctly in the next window. On the
+pooled test split it hits 44 of 4482 contact-PPG windows: 39 MCD, 5 MR-NIRP, 0
+UBFC. Those 5 were 12% of MR-NIRP's windows, enough to move that corpus to
+6.79 bpm MAE and rho -0.07 while the predicted waveforms matched their targets
+at MACC 0.9.
+
+`beats` repairs it by keeping only peaks above half the median prominence, and
+**only when beat timing claims a rate 1.4x the spectral peak or higher** -- a
+rate no pulse produces, since the spectrum of a real 115 bpm pulse peaks at 115.
+The floor is not applied unconditionally because on a noisy predicted waveform it
+discards real beats: over the 788 windows in `build/readout_test.npz` an
+unconditional floor cost 0.34 bpm MAE and 1.4 bpm RMSE. Conditional, the same
+sweep improves (MAE 3.810 -> 3.787, RMSE 6.713 -> 6.639, rho 0.858 -> 0.862),
+the guard fires on 0.56% of test windows, and label inconsistency falls from 44
+windows to 27.
+
 ## Results
 
 MCD-rPPG plus UBFC-rPPG, 6 epochs, 300-frame windows, batch 4, subject-grouped
