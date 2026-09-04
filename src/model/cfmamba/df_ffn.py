@@ -57,7 +57,7 @@ class DualFrequencyFFN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         projected = self.proj_in(x)
         # FFT has no autocast kernel, and complex arithmetic in bf16 forfeits far more
-        # than the memory is worth on a 0.9M-parameter model, so the whole spectral
+        # than the memory saved on a 0.9M-parameter model, so the spectral
         # section runs in float32 whatever the surrounding autocast context.
         with torch.autocast(x.device.type, enabled=False):
             spectral = self.pts(self.cs(projected.float()))

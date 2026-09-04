@@ -1,7 +1,7 @@
 [project]
 name = "experiment"
 version = "0.1.0"
-description = "Add your description here"
+description = "CFMamba-Phys reimplementation: heart rate from facial video"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

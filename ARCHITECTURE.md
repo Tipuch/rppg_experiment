@@ -5,19 +5,19 @@ Rebuilt from Wang et al., *Biomedical Signal Processing and Control* 126 (2026)
 RhythmFormer (arXiv:2402.12788), FreTS (NeurIPS 36) and CMamba (arXiv:2406.05316)
 pinning values that both leave open. All five papers are in `research/`.
 
-**0.9327M parameters, 79.15M MACs per frame.** Published: 0.91M and 80.82M -- so
+**0.9327M parameters, 79.15M MACs per frame.** Published: 0.91M and 80.82M, so
 +2.5% and -2.0%. Those two numbers are the only quantitative constraints on the
-parts the paper does not specify, so they are enforced as a test —
-`tests/test_budget.py` — and it runs before training rather than after. The MAC
-figure does not include the scan, which is a fused kernel and opaque to
+parts the paper does not specify, and `tests/test_budget.py` enforces them. The MAC
+figure excludes the scan, which is a fused kernel and opaque to
 `FlopCounterMode`.
 
 The scan itself is Mamba-3 rather than the Mamba-1 selective scan all three source
 papers call; see §4.1.
 
 Input `(B, T, 3, 128, 128)` in `[0, 1]` plus a skin mask `(B, 128, 128)`.
-Output `(B, T)`: one BVP sample per input frame. Heart rate is **not** predicted; it
-is read off the waveform afterwards by band-pass and periodogram.
+Output `(B, T)`: one BVP sample per input frame. Heart rate is not predicted; it is
+read off the waveform afterwards by band-pass and beat timing -- the median
+inter-beat interval. See section 8.
 
 ```
 (B, T, 3, 128, 128)
@@ -38,10 +38,10 @@ is read off the waveform afterwards by band-pass and periodogram.
 
 ---
 
-## 1. Why space is collapsed before the scan
+## 1. Space is collapsed before the scan
 
-This is the basis everything else depends on, and it is the sharpest difference
-from PhysMamba, the other Mamba-based rPPG model. PhysMamba flattens **space and
+This is the basis the rest of the design depends on, and the main difference from
+PhysMamba, the other Mamba-based rPPG model. PhysMamba flattens **space and
 time together** into one token sequence (`n_tokens = nf * H * W` in
 `tools/rPPG-Toolbox/neural_methods/model/PhysMamba.py`). RhythmMamba measured what
 that costs (its Table 4):
@@ -54,7 +54,7 @@ that costs (its Table 4):
 | 2x2 | 4.69 | 9.97 |
 | **1x1 (spatial average pool)** | **3.54** | **7.68** |
 
-Spatial structure in the token sequence makes Mamba *worse*. A selective scan's
+Spatial structure in the token sequence lowers the score. A selective scan's
 state transition is a temporal phase shift; adding spatial dimensions raises the
 dimensionality of that transition without giving the recurrence anything it can
 use. So PGA pools space away at the earliest possible point, and every block after
@@ -107,12 +107,13 @@ RhythmMamba, so both are implemented and the cost budget arbitrates:
 
 `stem2` at 5x5 is neither paper's given value. RhythmMamba's text only constrains
 that convolution to stride 1 — the 16x16 arithmetic fails otherwise — so its kernel
-was never pinned, and 5 is what reproduces the published cost: 82.5M MACs/frame
-against 94.5M at 7 and 74.1M at 3.
+was never pinned, and 5 is what reproduces the published cost. Measured over the
+whole model at the time of that search: 82.5M MACs/frame at 5, against 94.5M at 7
+and 74.1M at 3. The current model, after the Mamba-3 swap, is 79.15M.
 
-The diff *ordering* is dead: reverse is chronological negated, and the first
-convolution is linear, so it cannot change what the stem can represent. Kept
-accurate anyway.
+The diff ordering makes no difference to what the stem can represent: reverse is
+chronological negated, and the first convolution is linear. It follows
+RhythmMamba's text regardless.
 
 ---
 
@@ -120,7 +121,7 @@ accurate anyway.
 
 `src/model/cfmamba/pga.py`. **Zero parameters.**
 
-Once space is pooled away you have thrown away *where* the signal was. RhythmMamba's
+Once space is pooled away, *where* the signal was is gone. RhythmMamba's
 answer was a learned sigmoid gate; CFMamba's objection is that a purely data-driven
 gate has nothing anchoring it to anatomy, so under motion it strays onto hair,
 edges and background (its Fig. 3a). PGA multiplies two maps before pooling.
@@ -138,9 +139,10 @@ the prior tracks the subject rather than assuming a centred face, and it is
 parameter-free so it cannot be trained away. An empty mask degrades to a centred
 bias rather than a NaN.
 
-Eq. 2 is a divisive normalisation, not a sigmoid — that is the substantive
-difference from RhythmMamba. A sigmoid saturates and forfeits the ratio between two
-bright regions; this keeps it, so a channel can express "twice as much here".
+Eq. 2 is a divisive normalisation rather than a sigmoid, which is the substantive
+difference from RhythmMamba. A sigmoid saturates and loses the ratio between two
+bright regions; a divisive normalisation keeps it, so a channel can represent
+"twice as much here".
 
 Eq. 4's constant is confirmed against the source it references: EfficientPhys and TS-CAN
 both implement `x / sum(x) * H * W * 0.5`
@@ -181,9 +183,9 @@ X_mamba = sum_i X_path_i * silu(Proj(X_stem))          Eq. 4
 ```
 
 **The scan inside is Mamba-3** (Lahoti et al., arXiv:2603.15569), not the Mamba-1
-selective scan all three source papers call. The block around it is unchanged —
-same `(B, T, C)` in and out, same CAM, same DF-FFN, same residuals. Four changes
-to the recurrence:
+selective scan all three source papers call. The block around it is unchanged:
+same `(B, T, C)` in and out, same CAM, same DF-FFN, same residuals. Four changes to
+the recurrence:
 
 | | Mamba-1 | Mamba-3 |
 |---|---|---|
@@ -203,23 +205,29 @@ The conv is gone because the trapezoid *is* an implicit width-2 convolution on
 `B_t x_t` (§3.1.2). Table 5a measures adding it back as worse: 15.72 ppl against
 15.85 for "Mamba-3 + conv".
 
-`d_state=16, expand=2, headdim=32, rope_fraction=1.0, chunk_size=32`. `d_state`
-carries over from the Mamba-1 fit rather than rising to Mamba-3's default of 128,
-which is sized for a 1.5B language model. `rope_fraction=1.0` rotates the whole
-state for `d_state/2 = 8` angles (Prop. 2); 0.5 would leave four, too coarse for a
-heart rate. `chunk_size=32` because the quartered path is `T/4` — 75 frames at the
-300 this trains on — and 64 leaves it no cross-chunk recurrence.
+`d_state=16, expand=2, headdim=32, mimo_rank=1, rope_fraction=1.0, chunk_size=32`.
+`d_state` carries over from the Mamba-1 fit rather than rising to Mamba-3's default
+of 128, which is sized for a 1.5B language model. `mimo_rank=1` keeps the
+single-input single-output recurrence Mamba-1 and Mamba-2 have; Mamba-3's MIMO
+extension (its section 3.2) raises the rank of the `B`/`C` outer product, and at
+rank 1 the two are the same operator. `rope_fraction=1.0` rotates the whole state
+for `d_state/2 = 8` angles (Prop. 2); 0.5 would leave four, too coarse for a heart
+rate. `chunk_size=32` because the quartered path is `T/4` -- 75 frames at the 300
+this trains on -- and 64 leaves it no cross-chunk recurrence.
 
-Measured, this is *cheaper* than what it replaced: 0.9559M → **0.9327M**, and the
-error against the published 0.91M with it, +5.0% → **+2.5%**.
+`mimo_rank` is a constructor argument on `CFMambaPhys` and `MultiTemporalMamba`,
+not a `TrainConfig` field: nothing in the lineage measures it.
 
-**Direction.** Unidirectional by default. Neither paper states, and the evidence
-splits: RhythmMamba's phase-shift argument reads as directional and neither
-`mamba_ssm.Mamba` nor `Mamba3` has a `bimamba` flag (PhysMamba's came from a fork), but a pulse
-is not causal in any physical sense and an offline model has the whole clip. The
-`direction` argument resolves it by measurement: `"shared"` scans the reversed
-sequence with the same weights and adds no parameters; `"separate"` is Vim-style and
-roughly doubles the SSM parameter count.
+Measured, this costs less than what it replaced: 0.9559M -> 0.9327M, and the error
+against the published 0.91M, +5.0% -> +2.5%.
+
+**Direction.** Unidirectional by default. Neither paper states which, and the
+evidence splits: RhythmMamba's phase-shift argument reads as directional, and
+neither `mamba_ssm.Mamba` nor `Mamba3` has a `bimamba` flag (PhysMamba's came from a
+fork); against that, a pulse is not causal in any physical sense and an offline
+model has the entire clip. `TrainConfig.direction` leaves it to measurement:
+`"shared"` scans the reversed sequence with the same weights and adds no
+parameters, `"separate"` is Vim-style and roughly doubles the SSM parameter count.
 
 Measured: unidirectional influence of the last frame on every earlier position is
 **exactly 0.0**; `"shared"` puts 3.7e-2 three steps back, decaying to ~1e-4 at 31.
@@ -282,25 +290,26 @@ A pointwise time-domain FFN cannot see a periodicity spread over a whole clip. S
 **CS-FFN** (Eqs. 9-12) — FFT along the **channel** axis, complex linear `160x160`
 shared across timestamps, iFFT. RhythmMamba's frequency FFN unchanged.
 
-#### Section 3.3 omits the activation, and it matters
+#### Section 3.3 omits the activation
 
 Every operation the section names is linear: linear expansion, FFT, complex linear,
 iFFT, Gaussian gating, iFFT, linear projection. The only sigmoid in it constrains
-`f_c` and `b_w`, which are parameters, not activations. Implemented exactly as
-written, the whole DF-FFN is therefore **one linear operator** -- measured by
-superposition, relative affine error `2.2e-07`, against `6.4e-01` for an normal
-two-layer MLP. Four stacked linear blocks add nothing the Mamba layers do not
-already do, which cannot be what an ablation worth 0.36 against 0.59 MAE is
-describing.
+`f_c` and `b_w`, which are parameters rather than activations. Implemented as
+written, the DF-FFN is one linear operator -- measured by superposition, relative
+affine error `2.2e-07`, against `6.4e-01` for a two-layer MLP. Four stacked linear
+blocks add nothing the Mamba layers do not already do, which does not match an
+ablation measured at 0.36 against 0.59 MAE.
 
-FreTS, the work CFMamba references for the complex linear, does have one: its Eq. 7
-applies the activation to the real and imaginary parts **separately** and restacks
-them. That is where it goes here, inside both complex linears -- so `ComplexLinear`
-stays exactly Eqs. 10-11 and `complex_activation` is the other half of what FreTS
-calls a FreMLP. ReLU by default, FreTS's own choice; `activation=None` restores the
-literal reading and `"gelu"` is available, because ReLU on an imaginary part
-discards half the phase plane and whether a pulse wants that is a question for the
-ablation.
+FreTS, the work CFMamba references for the complex linear, has one: its Eq. 7
+applies the activation to the real and imaginary parts separately and restacks
+them. That is where it goes here, inside both complex linears, so `ComplexLinear`
+stays Eqs. 10-11 and `complex_activation` is the other half of what FreTS calls a
+FreMLP.
+
+`ffn_activation` defaults to **GELU** (`src/model/cfmamba/model.py`,
+`df_ffn.py`, `TrainConfig`). `"relu"` is FreTS's own choice and `None` restores the
+literal Section 3.3 reading, which is linear. ReLU on an imaginary part discards
+half the phase plane, so which of the three a pulse wants is left to the ablation.
 
 **PTS-FFN** (Eqs. 13-18) — FFT along **time**, the learnable Gaussian band mask,
 complex linear, iFFT.
@@ -311,21 +320,21 @@ b_w  = 0.2  + sigmoid(theta) * (1.0 - 0.2)    Hz
 M(f) = exp(-(f-f_c)^2 / 2 b_w^2) + exp(-(f+f_c)^2 / 2 b_w^2)   Eq. 15
 ```
 
-The sigmoid is a hard constraint and that is the point: no setting of the weights
-can centre the filter outside 45-150 bpm, so it stays a physiological prior rather
-than one more parameter that can resolve on a motion artifact.
+The sigmoid is a hard constraint: no setting of the weights can centre the filter
+outside 45-150 bpm, so it stays a physiological prior rather than a parameter that
+can settle on a motion artifact.
 
-**Eq. 15 is two Gaussians because a real signal's spectrum is conjugate symmetric**
-— the peak appears at +f_c and -f_c. A single lobe would keep one, halve the energy
+Eq. 15 is two Gaussians because a real signal's spectrum is conjugate symmetric:
+the peak appears at +f_c and -f_c. A single lobe would keep one, halve the energy
 and leave the inverse transform complex. Hence full `fft`, not `rfft`.
 
-**Frequencies are Hz, never bin indices.** Bin *k* means `k*fps/T`, so a mask built
-from bin numbers means a different filter at every clip length, keeps its shape, and
-raises nothing. That exact fault went unreported in the model this replaces, where a
-fixed bin list meant 45-202 bpm at T=160 and 24-108 bpm at T=300.
-`tests/test_band_mask.py` keeps the peak to the same Hz across T = 100/160/300/450.
+Frequencies are Hz, never bin indices. Bin *k* means `k*fps/T`, so a mask built from
+bin numbers is a different filter at every clip length while raising nothing. In the
+model this replaces, a fixed bin list meant 45-202 bpm at T=160 and 24-108 bpm at
+T=300. `tests/test_band_mask.py` holds the peak to the same Hz across
+T = 100/160/300/450.
 
-#### Eq. 17, the one place the paper conflicts with itself
+#### Eq. 17, where the paper conflicts with itself
 
 Its text — "applied to each channel individually, with weights shared across all N
 channels" — reads as a `(T, T)` matrix over the frequency axis. But the same
@@ -339,9 +348,12 @@ Two outside facts break the tie:
 - **CFMamba Table 4 measured cost on a 900-frame clip** while §4.1 trained on
   160-frame segments. A `(T, T)` weight cannot do both.
 
-So `pts_mode="channel"`. `"full"` is implemented as the literal-text alternative
-and shown in `tests/test_budget.py` to be inconsistent with the paper's own
-experiment.
+So `pts_mode="channel"` is the default. `"full"` implements the literal-text
+alternative, and `tests/test_budget.py` shows it inconsistent with the paper's own
+experiment. Two further values exist for the ablation: `"diagonal"`, a per-channel
+complex gain rather than a full `(N, N)` mixing matrix, and `"none"`, which drops
+the projection and leaves the Gaussian mask alone. All four are fields on
+`TrainConfig`.
 
 ---
 
@@ -350,13 +362,13 @@ experiment.
 `Conv1d(80, 80, k=5) -> SiLU -> Conv1d(80, 1, k=1)` -> `(B, T)`. 0.0322M
 parameters. A convolution rather than a Linear: the map from local temporal context
 to pulse amplitude is the same at every instant, so it shares weights across time
-and stays valid for any T.
+and holds for any T.
 
 ---
 
 ## 6. Loss
 
-`src/model/losses.py`. `L = 0.2 * L_time + 1.0 * L_freq` (Eq. 19).
+`src/model/losses.py`. `L = 0.8 * L_time + 1.0 * L_freq` (Eq. 19).
 
 `L_time` is negative Pearson — scale- and offset-invariant, which is required: the
 network sees skin brightness and cannot know the contact sensor's gain, so demanding
@@ -364,20 +376,27 @@ absolute agreement would penalise a correctly shaped prediction for being the wr
 size.
 
 `L_freq` is cross-entropy between the predicted spectrum and the target's dominant
-rate, over 105 candidates at 1 bpm resolution across 45-150 bpm. It exists because
+rate, over 105 candidates at 1 bpm resolution covering 45-149 bpm. It exists because
 correlation is indifferent to *which* periodicity was locked onto: a prediction at
 double the true rate can correlate respectably while being wrong by 72 bpm.
 
-**The weights are RhythmFormer's**, because CFMamba leaves them unstated and
-RhythmFormer's Table 13 shows the balance is not minor:
+### The weights
+
+CFMamba Eq. 19 states `alpha` and `beta` as symbols and gives no values.
+RhythmFormer Section 3.4 supplies 0.2 and 1.0 for the same construction, and its
+Table 13 records what the balance does:
 
 | terms | MAE | RMSE |
 |---|---|---|
 | time only | 3.56 | 8.17 |
-| **freq only** | **13.32** | 16.54 |
+| freq only | 13.32 | 16.54 |
 | both | 3.13 | 6.98 |
 
-The temporal term carries the model. The frequency term alone reduces it.
+This project ran at `alpha = 0.2` and measured, over a 15-epoch UBFC run, that the
+temporal term stopped moving from epoch 2 at 0.674 train / 0.448 dev, and that at
+that weight it was ~1.5% of the total loss. **`alpha` is 0.8 here**, a departure
+from RhythmFormer on that measurement. `beta` stays at 1.0. Loss totals from runs
+before the change are on a different scale and are not comparable term by term.
 
 The frequency term is written here rather than imported from the toolbox because
 `TorchLossComputer.Frequency_loss` obtains its label through
@@ -403,7 +422,7 @@ The SegFace skin mask is cached once per clip at 256, and the same sub-window is
 mapped into that frame and resampled alongside. Frames are never routed through
 256; the mask's resolution is the mask's business.
 
-### One resample, and why that took fixing
+### One resample
 
 The chain used to be `box -> 256 -> crop 224 -> 128`: three resampling steps to
 serve one crop. Two things were wrong with it.
@@ -462,20 +481,20 @@ fix, does not work here: `persistent_workers=True` keeps workers alive across
 epochs so their base seed never changes either. Evaluation keeps the per-index seed,
 because a scored window has to be the same window every time.
 
-**Skin masking is off by default.** None of the three papers masks; the mask's job
-here is to supply PGA's prior. `--skin-mask` restores the old behaviour.
+**Skin masking is off by default.** None of the three papers masks, and the mask's
+job here is to supply PGA's prior. `TrainConfig.apply_skin_mask` zeroes non-skin
+pixels for the ablation.
 
 ### The face box, measured
 
 The toolbox all three papers used enlarges the detected box by `LARGE_BOX_COEF=1.5`
 and detects on the **first frame only** with a Haar Cascade. This pipeline uses
-YuNet, a **median over 24 sampled frames**, and 1.25x. The detector and the median
-are straightforwardly better -- Haar Cascade falls back to the *whole frame* when
-it fails, and a first-frame box is exactly why RhythmFormer's Table 11 caps input
-at 160 frames ("subsequent frames may lose the face due to motion").
+YuNet, a median over 24 sampled frames, and 1.25x. Haar Cascade falls back to the
+entire frame when it fails, and a first-frame box is why RhythmFormer's Table 11
+caps input at 160 frames ("subsequent frames may lose the face due to motion").
 
-**This project trains at 300 frames, not 160.** A deliberate departure: it halves
-the FFT bin spacing, from 11.25 bpm to 6.0 bpm. It also means numbers produced
+**This project trains at 300 frames, not 160.** It halves the FFT bin spacing, from
+11.25 bpm to 6.0 bpm. It also means numbers produced
 here are not directly comparable with the published ones, and RhythmFormer's
 Table 11 measures 160 as the better length (3.07 MAE against 3.86 at 320). The
 band mask is unaffected -- it is parameterised in Hz precisely so that changing T
@@ -490,51 +509,54 @@ random UBFC segments, same windows both times:
 | 1.25x (ours) | 210 px | 34.5% | 3.34 | 9.32 | +0.845 | **6.56** |
 | 1.50x (toolbox) | 253 px | 24.0% | **3.22** | **8.82** | **+0.870** | 6.68 |
 
-A tie. 1.5x is 4% better on POS and 2% worse on CHROM, which at n=120 is noise.
-**1.25x is kept**, because the difference does not justify rebuilding 3653 SegFace
-masks at roughly 90 s each. If a rebuild happens for another reason, take 1.5x for
-comparability -- `median_face_box(pad=0.5)` is the switch.
+1.5x is 4% better on POS and 2% worse on CHROM, which at n=120 is within noise.
+1.25x is kept, because the difference does not justify rebuilding 3692 SegFace masks
+at roughly 90 s each. `median_face_box(pad=0.5)` switches to 1.5x if a rebuild
+happens for another reason.
 
-Worth noting for reading any result: POS scores 1.66 bpm MAE on the paper
-protocol's 12 test subjects and 3.34 bpm on a random sample across all 48. The
-floor moves by 2x depending on which subjects land in the split, which is why
-metrics are reported per subject and per source rather than as one number.
+For reading any result: POS scores 1.66 bpm MAE on the UBFC paper protocol's 12 test
+subjects and 3.34 bpm on a random sample across all 48. The floor moves by 2x
+depending on which subjects land in the split, which is why metrics are reported per
+subject and per source rather than as one number.
 
 **Ground-truth heart rate comes from the contact PPG, never the label column.**
-`DATASETS.md` records subject24 named 96 bpm against a PPG reading of 127.2, plus
+`DATASETS.md` records subject24 labelled 96 bpm against a PPG reading of 127.2, plus
 four more UBFC subjects whose HR readout drops out while the waveform stays intact.
 
 ---
 
 ## 8. Protocol
 
-**One split over every corpus, assigned once and persisted.** `src.cli combine`
+One split over the pooled corpora, assigned once and persisted. `src.cli combine`
 pools UBFC, MR-NIRP and MCD into `build/clips_all.parquet` at 90/3/7, grouped by
-subject and **stratified by source** so each corpus reaches dev and test. `train`
-reads that column rather than deriving a split, so the partition cannot move when
-the manifest grows.
+subject and stratified by source so each corpus reaches dev and test. `train` reads
+that column rather than deriving a split, so the partition cannot move when the
+manifest grows. A manifest with no `split` column gets a subject-grouped 85/10/5
+derived at load time, and the run prints which of the two it used.
 
 The published UBFC protocol (first 30 subjects train, last 12 test) was removed:
 it only understands UBFC's `subjectN` ids, and on the pooled manifest it silently
 placed 606 of 666 subjects in train. Results here are not comparable with the
 papers' tables in any case — they use 160-frame windows and this trains at 300.
 
-Clips are **not** filtered by a pulse-prominence screen. Selecting clips where a
-simple spectral estimator already agrees with the label makes any later result
-circular.
+Clips are not filtered by a pulse-prominence screen. Selecting clips where a simple
+spectral estimator already agrees with the label makes any later result circular.
 
-**No checkpoint selection.** Both papers report the last epoch, so the epoch
-budget is chosen in advance — 50 by default.
+**The reported result is the last epoch.** Both papers report that, so the epoch
+budget is chosen in advance -- 50 by default. A dev split is scored each epoch on a
+fixed subsample of 1500 segments for the trajectory, and `<run-dir>/best.pt` is
+written whenever an epoch sets a new lowest dev loss, because `last.pt` is
+overwritten each epoch and cannot be rolled back. `best.pt` is a second artefact and
+is scored only if `--model` points at it; the reported number stays the last
+epoch's.
 
-Evaluation lists every non-overlapping segment, not one centred window per clip,
-and reports **per source**: MCD is 98.45% of the segments, so an aggregate over
-any split is a measurement of MCD.
+Evaluation lists every non-overlapping segment, not one centred window per clip, and
+reports per source: MCD is 98.45% of the segments, so an aggregate over any split is
+largely a measurement of MCD.
 
-**POS and CHROM are scored on the same windows before training starts.** They need
-no training and publish ~4.06-4.08 bpm MAE on UBFC in every table in both papers. A
-run that ends above them has not learned anything a decade-old algorithm does not
-already do. This replaces predict-the-training-mean, which is meaningful for a
-scalar regression and meaningless for a waveform.
+POS and CHROM are the classical floor. Neither needs training, and both publish
+~4.06-4.08 bpm MAE on UBFC in every table in both papers. `src.cli baseline` scores
+them on the same windows the model is scored on.
 
 ---
 
@@ -544,50 +566,49 @@ The published 0.91M parameters and 80.82M MACs/frame are two equations in severa
 unknowns. They cannot recover the architecture; they can and do rule configurations
 out.
 
-**Reading the referenced sources moved the fit, and improved it.** Before FreTS and
-CMamba were read, PTS-FFN was a `(T, T)` frequency matrix and CAM was an SE-net
-bottleneck. Both were wrong in the direction of too few parameters, and correcting
-them took the fit from -2.9%/+2.1% to **-0.6%/-2.0%**. A reconstruction getting
-*closer* to two independent published numbers as its module shapes are corrected
-against the sources is the available evidence that the shapes are right.
+Reading the referenced sources moved the fit. Before FreTS and CMamba were read,
+PTS-FFN was a `(T, T)` frequency matrix and CAM was an SE-net bottleneck. Both were
+wrong in the direction of too few parameters, and correcting them took the fit from
+-2.9%/+2.1% to -0.6%/-2.0% under the Mamba-1 scan. The current Mamba-3
+configuration sits at +2.5%/-2.0%.
 
-**What remained across every configuration search** — before and after those corrections — is depth 4 and
-a stem width of 16. `dim=80` with a 2x FFN latent is a
-fit among several that land inside tolerance, not a recovery.
+What held across every configuration search, before and after those corrections, is
+depth 4 and a stem width of 16. `dim=80` with a 2x FFN latent is one fit among
+several that land inside tolerance.
 
-**Where the budget cannot help at all.** CAM is the only module that is
-parameter-heavy and compute-free, because Eq. 6 pools over T *before* the MLPs, so
+**Where the budget gives no signal.** CAM is the only module that is
+parameter-heavy and compute-free, because Eq. 6 pools over T before the MLPs, so
 they run once per clip on a `(B, C)` vector rather than per frame. Measured, MACs
 per frame are identical to the second decimal from `r = 0.25` to `r = 4.0` while
-parameters move 0.879M -> 1.265M. The FLOP budget is silent on that control and the
-parameter budget is the only evidence -- which is why it is the one place a textual
-argument was allowed to overrule it.
+parameters move 0.879M -> 1.265M. The FLOP budget says nothing about that setting
+and the parameter budget is the only evidence, which is why it is the one place a
+textual argument overrules it.
 
-**Unverified and still open:** whether the SSM is bidirectional (see §4.1); the
-learning rate, which no paper in the lineage states; CAM's exact expansion rate,
-which CMamba sweeps in a figure without printing the chosen value; and which
-activation the DF-FFN's omitted non-linearity should be (§4.3).
+**Unverified and open:** whether the SSM is bidirectional (see section 4.1); the
+learning rate, which no paper in the lineage states; CAM's expansion rate, which
+CMamba sweeps in a figure without printing the chosen value; and which activation
+the DF-FFN's omitted non-linearity should be (section 4.3).
 
-**One place the paper conflicts with itself.** Section 3.1 states the facial region is
+**Where the paper conflicts with itself.** Section 3.1 states the facial region is
 detected "for every frames"; Section 4.1 states "facial recognition was executed
-solely on the first frame of each segment". This pipeline does neither -- a median
-box over 24 sampled frames, measured as no worse than a 1.5x first-frame crop (see
-the face box table above) and robust to a bad first frame in a way that neither of
-the paper's own descriptions is.
+solely on the first frame of each segment". This pipeline does neither: a median box
+over 24 sampled frames, measured as no worse than a 1.5x first-frame crop (see the
+face box table above).
 
 ---
 
 ## 10. Known limits
 
-**The corpus, not the architecture, is the binding constraint.** UBFC-rPPG is 42
-subjects and ~55 minutes of video. The paper reports 0.36 bpm MAE; this copy of
-UBFC departs — three subjects run at 23.2 fps, five have a broken HR readout, and
-the decode and crop path is this project's rather than the toolbox's.
+**The corpus, not the architecture, is the binding constraint.** UBFC-rPPG ships 50
+subjects across two releases: 8 in DATASET_1 and 42 in DATASET_2, ~55 minutes of
+video, of which 48 clips reach the pooled manifest. The paper reports 0.36 bpm MAE;
+this copy of UBFC differs -- three subjects run at 23.2 fps, five have a broken HR
+readout, and the decode and crop path is this project's rather than the toolbox's.
 
 **The skin mask is one median mask per clip**, so it does not track subject motion.
 Stable for UBFC's seated recordings.
 
 **Blood pressure is out of scope.** The target is the pulse waveform and the
 heart rate read off it. The manifest still carries nullable `sbp_mmhg` and
-`dbp_mmhg` columns so MCD's cuff readings are not thrown away, but nothing reads
-them and no head predicts them.
+`dbp_mmhg` columns so MCD's cuff readings are retained, but nothing reads them and
+no head predicts them.

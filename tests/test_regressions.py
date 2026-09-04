@@ -1,10 +1,9 @@
-"""Regressions: defects that shipped, or nearly did, and the shape of each.
+"""Regressions: faults that reached the tree, and what each looked like.
 
-Every test here corresponds to something that went wrong during the MR-NIRP
-ingest. They are collected in one file because what they have in common is not a
-module but a failure mode -- each one produced a *plausible* artifact rather than
-an exception, which is why none of them was caught by the code that had to be
-correct for them to matter.
+They are collected in one file because what they have in common is a failure
+mode rather than a module: each produced a plausible artifact rather than an
+exception, so none was caught by the code that had to be correct for it to
+matter.
 """
 
 from __future__ import annotations
@@ -235,7 +234,7 @@ def test_segment_counts_matches_the_loader_at_the_project_default_length():
         )
         got = (
             manifest.with_columns(segment_counts(
-                manifest, DEFAULT_CLIP_FRAMES, TARGET_FPS, stride).alias("n"))
+                DEFAULT_CLIP_FRAMES, TARGET_FPS, stride).alias("n"))
             .sort("clip_id")["n"].to_list()
         )
         assert got == expected, f"stride={stride}: {got} != {expected}"
@@ -487,3 +486,97 @@ def test_a_corpus_falls_back_to_the_next_manifest_that_has_it(tmp_path):
     empty = tmp_path / "remux.parquet"
     _corpus("ubfc", 2, 60.0).write_parquet(empty)
     assert load_parts({"mcd": (empty, plain)}).height == 3
+
+
+# --------------------------------------------------------------------------- #
+# A CLI option read through a default argument
+# --------------------------------------------------------------------------- #
+def test_samples_seconds_reaches_prepare():
+    """`--seconds` was set on a module global that nothing read at call time.
+
+    `make_samples.prepare` took `seconds: float = SECONDS`, and Python binds that
+    default at import. The CLI assigned `make_samples.SECONDS = seconds` after
+    import, so `main()` called `prepare(video)` and got 5.0 whatever was asked
+    for. No error, and the contact sheets looked correct.
+    """
+    import inspect
+
+    from src.aggregation import make_samples
+
+    # `main` accepts the value rather than reading a module global.
+    assert "seconds" in inspect.signature(make_samples.main).parameters
+    assert "per_source" in inspect.signature(make_samples.main).parameters
+    assert not hasattr(make_samples, "SECONDS")
+
+    # And the value reaches `prepare` on a real call.
+    seen: list[float] = []
+    original_prepare, original_targets = make_samples.prepare, make_samples._targets
+    try:
+        make_samples.prepare = lambda video, seconds: seen.append(seconds) or None
+        make_samples._targets = lambda per_source=4: [("ubfc", Path("/nonexistent.avi"))]
+        make_samples.main(per_source=1, seconds=2.0)
+    finally:
+        make_samples.prepare = original_prepare
+        make_samples._targets = original_targets
+    assert seen == [2.0]
+
+
+# --------------------------------------------------------------------------- #
+# `info` reporting a partition no training run uses
+# --------------------------------------------------------------------------- #
+def test_info_reports_the_split_the_manifest_carries(tmp_path):
+    """`info` re-derived an 85/10/5 split and printed that as the split.
+
+    `train` reads the manifest's own `split` column, which `combine` writes at
+    90/3/7. The two commands therefore described different partitions of the same
+    file, and the one `info` printed was not the one being trained on.
+    """
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    manifest = tmp_path / "m.parquet"
+    pl.DataFrame({
+        "clip_id": [f"ubfc/{i}" for i in range(10)],
+        "subject_id": [f"s{i}" for i in range(10)],
+        "source": ["ubfc"] * 10,
+        "duration_s": [60.0] * 10,
+        "fps": [30.0] * 10,
+        "skin_frac": [0.4] * 10,
+        "hr_bpm": [72.0] * 10,
+        # Deliberately not 85/10/5: 8/1/1 is what must come back.
+        "split": ["train"] * 8 + ["dev", "test"],
+    }).write_parquet(manifest)
+
+    result = CliRunner().invoke(cli, ["info", "--manifest", str(manifest)])
+    assert result.exit_code == 0, result.output
+    assert f"as {manifest} carries it" in result.output
+    # 80/10/10, the column's own ratios. The derived split would give 85/10/5.
+    reported = {
+        line.split()[0]: line.split()[-1]
+        for line in result.output.splitlines()
+        if line.startswith(("  train", "  dev", "  test"))
+    }
+    assert reported == {"train": "80.0%", "dev": "10.0%", "test": "10.0%"}
+
+
+def test_info_says_so_when_it_derives_the_split(tmp_path):
+    """A manifest with no split column gets one derived, and the line says so."""
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    manifest = tmp_path / "m.parquet"
+    pl.DataFrame({
+        "clip_id": [f"ubfc/{i}" for i in range(10)],
+        "subject_id": [f"s{i}" for i in range(10)],
+        "source": ["ubfc"] * 10,
+        "duration_s": [60.0] * 10,
+        "fps": [30.0] * 10,
+        "skin_frac": [0.4] * 10,
+        "hr_bpm": [72.0] * 10,
+    }).write_parquet(manifest)
+
+    result = CliRunner().invoke(cli, ["info", "--manifest", str(manifest)])
+    assert result.exit_code == 0, result.output
+    assert "carries no split column" in result.output

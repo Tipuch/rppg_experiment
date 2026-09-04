@@ -1,17 +1,18 @@
-"""Randomised train/dev/test bucketing at 85 / 10 / 5.
+"""Train/dev/test bucketing over subjects.
 
-Randomised over *subjects*, not rows. Two reasons this is a correctness
-requirement rather than a preference:
+`RATIOS` (85/10/5) is the default; the pooled manifest is built at
+`RATIOS_POOLED` (90/3/7). See `src/aggregation/combine.py`.
+
+Bucketing is over *subjects*, not rows:
 
   - Windows cut from one recording are near-duplicates of each other. Splitting
     at row level puts near-copies on both sides.
   - SBP and DBP are one clinical reading broadcast across every window of a
-    recording (bp_granularity="clip"). A row-level shuffle therefore leaks the
-    exact test labels into training.
+    recording. A row-level shuffle leaks the test labels into training.
 
-Subjects are shuffled deterministically (seeded hash, no dependence on row
-order or machine) and then filled greedily by row count, so the resulting split
-tracks the 85/10/5 target in rows while keeping every subject whole.
+Subjects are shuffled deterministically (seeded hash, no dependence on row order
+or machine) and then filled greedily by row count, so the split tracks the target
+ratios in rows while keeping each subject on one side.
 """
 
 from __future__ import annotations
@@ -21,12 +22,15 @@ import hashlib
 import polars as pl
 
 RATIOS = {"train": 0.85, "dev": 0.10, "test": 0.05}
-# MR-NIRP is prepared on its own manifest at the ratios asked for it. 3% of a
-# 15-subject corpus is well under one subject, so `summarise` reports what was
-# achieved and that is the number to quote -- not this target.
-RATIOS_MRNIRP = {"train": 0.90, "dev": 0.03, "test": 0.07}
+# Used by `combine` for the pooled manifest and by `mrnirp` for its own. 3% of a
+# 15-subject corpus is under one subject, so `summarise` reports what was achieved;
+# that is the number to quote, not this target.
+RATIOS_POOLED = {"train": 0.90, "dev": 0.03, "test": 0.07}
 SPLIT_NAMES = ["train", "dev", "test"]
 DEFAULT_SEED = 20260822
+# Window length the segment count is defined at. `src.model.dataset` imports its
+# own DEFAULT_CLIP_FRAMES from here so the two cannot disagree.
+DEFAULT_FRAMES = 300
 
 
 def _order_key(source: str, subject_id: str, seed: int) -> str:
@@ -35,22 +39,22 @@ def _order_key(source: str, subject_id: str, seed: int) -> str:
 
 
 def segment_counts(
-    df: pl.DataFrame,
-    n_frames: int = 300,
+    n_frames: int = DEFAULT_FRAMES,
     fps: float = 30.0,
     stride_frames: int | None = None,
 ) -> pl.Expr:
-    """How many fixed-length windows each clip yields. The definition
-    `expand_to_segments` enumerates, and the weight the splitter balances by.
+    """Windows each clip yields, as an expression over `duration_s`.
 
-    `stride_frames` defaults to non-overlapping. It has to be a parameter rather
-    than assumed equal to `n_frames`: a caller that subsamples a large corpus with
-    a stride gets fewer windows, and a count that ignored it would weight the
-    split against segments that are never enumerated.
+    This is the definition `expand_to_segments` enumerates and the weight the
+    splitter balances by, so the two cannot drift apart.
 
-    The epsilon is not cosmetic: a clip whose duration is an exact multiple of the
-    span lands on a floating-point boundary where the division evaluates to
-    28.999999, and the floor silently drops a whole segment.
+    `stride_frames` defaults to non-overlapping. A caller that subsamples a large
+    corpus with a stride gets fewer windows, and a count that ignored the stride
+    would weight the split by segments that are never enumerated.
+
+    The epsilon: a clip whose duration is an exact multiple of the span lands on a
+    floating-point boundary where the division evaluates to 28.999999, and the
+    floor then drops a segment.
     """
     span = n_frames / fps
     stride = (stride_frames if stride_frames is not None else n_frames) / fps
@@ -80,30 +84,28 @@ def assign(
     `order` decides which subject is placed next, and on a small corpus it decides
     the whole result:
 
-      "hash"  shuffled order, the original behaviour. Every existing split in this
-              repo was produced this way, so it stays the default -- changing it
-              would silently move UBFC's 85/10/5 and break comparability with
-              every run already recorded.
+      "hash"  shuffled order. Every split recorded in this repo was produced this
+              way, so it stays the default; changing it moves the assignment and
+              breaks comparability with the runs already recorded.
       "size"  largest subject first, into whichever split has the most rows still
-              owing in absolute terms. Use it whenever a target share is smaller
-              than one subject.
+              owing in absolute terms. Use it when a target share is smaller than
+              one subject.
 
-    `stratify` names a column to split *within*, so every stratum contributes to
-    every side. Without it a greedy fill is free to put a whole stratum on one
-    side: MR-NIRP's first split gave dev 2 Car clips and test 3 Indoor ones, so
-    the test score measured Indoor alone and dev measured Car alone. Only use it
-    where strata do not share subjects, which is checked below.
+    `stratify` names a column to split *within*, so each stratum contributes to
+    each side. Without it a greedy fill can put one stratum entirely on one side:
+    MR-NIRP's first split gave dev 2 Car clips and test 3 Indoor ones, so the test
+    score measured Indoor and dev measured Car. Use it only where strata do not
+    share subjects, which is checked below.
 
-    Both halves of "size" are needed, and neither works alone. The default rule
-    picks the split furthest below target *as a fraction of its own target*,
-    which is scale-free -- so an empty dev bin looks equally starved whether it
-    wants 3% or 90%, and the first subjects placed go to the smallest bins. That
-    is exactly backwards: the small bins are the ones a single subject can
-    overshoot. Absolute capacity instead sends the big subjects to train, which
-    is the only bin with room for them, and leaves the small ones for dev and
-    test. Measured on MR-NIRP's 15 subjects at 90/3/7 (see the CLI output):
-    shuffled + relative gives 64/14/21, largest-first + relative gives 67/17/16,
-    and largest-first + absolute gives the figure DATASETS.md records.
+    "size" changes two things together. The default rule picks the split furthest
+    below target *as a fraction of its own target*, which is scale-free, so an
+    empty dev bin reads as equally starved whether it wants 3% or 90% and the
+    first subjects placed go to the smallest bins -- the bins a single subject can
+    overshoot. Absolute capacity sends the large subjects to train, the only bin
+    with room for them, and leaves the small ones for dev and test. Measured on
+    MR-NIRP's 15 subjects at 90/3/7: shuffled + relative gives 64/14/21,
+    largest-first + relative gives 67/17/16, largest-first + absolute gives the
+    ratios DATASETS.md records.
     """
     if df.height == 0:
         return df.with_columns(pl.lit(None, dtype=pl.String).alias("split"))

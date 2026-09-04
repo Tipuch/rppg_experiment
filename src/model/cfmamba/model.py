@@ -6,7 +6,7 @@
       -> L x Block           (B, T, C)             Mamba+CAM, then DF-FFN
       -> Predictor           (B, T)                the BVP waveform
 
-Everything after PGA is a time series, which is the basis the whole design depends
+Everything after PGA is a time series, which is the basis the design depends
 on: RhythmMamba Section 4.5 measured that leaving spatial structure in the token
 sequence makes Mamba *worse* (4.90 MAE at 8x8 tokens against 3.54 at 1x1), because
 spatial information raises the dimensionality of the state transition without
@@ -50,7 +50,6 @@ from .vanilla_ffn import VanillaFFN
 # 300, so a rate read off a window is resolved twice as finely before any
 # zero-padding interpolates it.
 DEFAULT_N_FRAMES = 300
-DEFAULT_RESOLUTION = 128
 DEFAULT_FPS = 30.0
 
 # Widths neither paper states. These are not guesses: they are the configuration

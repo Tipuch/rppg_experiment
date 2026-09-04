@@ -14,7 +14,7 @@ it ships directories of PGM stills inside nested zips.
 `discover` returns a DataFrame rather than yielding tuples because everything
 downstream of it -- pairing streams, joining labels, counting coverage, assigning
 splits -- is a table operation, and doing those in Python dicts is how the
-per-corpus blocks in `clips.iter_sources` grew to look like four different
+per-corpus blocks in the manifest builder grew to look like four different
 programs.
 """
 
@@ -63,7 +63,7 @@ def sessions_from(rows: list[dict]) -> pl.DataFrame:
     """Rows to a session table, filling absent targets with null.
 
     Absent rather than zero: UBFC and MR-NIRP have no blood pressure, and a
-    0 mmHg reading is a number a loss function will happily train on.
+    0 mmHg reading is a number a loss function trains on without complaint.
     """
     if not rows:
         return empty_sessions()

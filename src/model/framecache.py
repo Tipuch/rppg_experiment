@@ -1,57 +1,51 @@
-"""Materialised face-box frames, so training reads 23 MB a window instead of 147.
+"""Materialised face-box frames: training reads 23 MB a window instead of 147.
 
 UBFC-rPPG releases as uncompressed rawvideo AVI. One 640x480 frame is 921,600 bytes
-on disk, so decoding a 160-frame window reads 147 MB -- and `read_window` crops the
-face box inside the ffmpeg filter graph, which removes the pipe and the numpy
-allocation but not the read: ffmpeg still pulls every byte off disk before the crop
-filter sees it. The box is about 9% of the frame, so 92% of that read is thrown away.
+on disk, so decoding a 160-frame window reads 147 MB. `read_window` crops the face
+box inside the ffmpeg filter graph, which removes the pipe and the numpy allocation
+but not the read: ffmpeg pulls every byte off disk before the crop filter sees it.
+The box is about 9% of the frame, so 92% of that read is discarded.
 
 Measured on this corpus, one epoch of 484 segments moved 71 GB off a LUKS-encrypted
-volume to produce 3.7 GB of pixels, and the run was at 790 MB/s for 90 s an epoch
-with the CPU at a fifth of its capacity. Storage bandwidth was the limit, not
-decode and not the GPU.
+volume to produce 3.7 GB of pixels, at 790 MB/s for 90 s an epoch with the CPU at a
+fifth of its capacity. Storage bandwidth was the limit, not decode and not the GPU.
 
 So the box is decoded once, at native resolution and native frame rate, into one
-uint8 array per clip. **13.5 GB for all 48 UBFC clips**, which fits in page cache
-on a 62 GB machine, so after the first epoch the read costs nothing.
+uint8 array per clip: 13.5 GB for all 48 UBFC clips, which fits in page cache on a
+62 GB machine, so after the first epoch the read costs nothing.
 
-Native resolution and native rate, both intentionally:
+Native resolution and native rate, both deliberate:
 
   resolution  `WindowDataset` crops an 87.5% sub-window and then resamples once,
-              INTER_AREA when shrinking. Caching at 128 or 160 would put a
-              resample *before* that crop, and the pulse is a 0.1-0.5 LSB change
-              -- the arithmetic ARCHITECTURE.md §2 exists to protect. Storing the
-              box at source resolution resamples nothing: ffmpeg's crop is exact
-              pixel selection.
+              INTER_AREA when shrinking. Caching at 128 or 160 would put a resample
+              before that crop, and the pulse is a 0.1-0.5 LSB change; see
+              ARCHITECTURE.md section 2. Storing the box at source resolution
+              resamples nothing, since ffmpeg's crop is exact pixel selection.
   frame rate  the HR-balance augmentation decodes at TARGET_FPS*k with k in
               [0.7, 1.4]. A cache fixed at 30 fps would have to resample again to
               reach those, so the k that the augmentation depends on is exactly
               what a 30 fps cache ruins.
 
-## Why this is not exactly equal to ffmpeg, and why that is safe
+## How this differs from ffmpeg
 
-It cannot be, and the difference was measured rather than waved at.
+ffmpeg's `fps=` filter is nearest-frame selection -- checked frame by frame against
+a full decode, every frame it delivers is an exact source frame and never an
+interpolation. It selects with a running sum, while index arithmetic rounds each
+output frame independently, so the two disagree on the duplication boundaries where
+28.67 fps is stretched to 30.
 
-ffmpeg's `fps=` filter is **pure nearest-frame selection** -- checked frame by
-frame against a full decode, every frame it delivers is an exact source frame and
-never an interpolation. But it selects with a running running sum, while index
-arithmetic rounds each output frame independently. The two therefore disagree on
-the duplication boundaries where 28.67 fps is stretched to 30.
+Measured across clips at 28.67 and 29.78 fps and k in {0.75, 1.0, 1.35}:
 
-What was measured, across clips at 28.67 and 29.78 fps and k in {0.75, 1.0, 1.35}:
-
-  * the **anchor is identical** in every case -- `round(start * fps)` is the frame
+  * the anchor is identical in every case -- `round(start * fps)` is the frame
     ffmpeg delivers first;
-  * every other frame departs by **at most one source frame**, 35 ms at 28.67 fps;
+  * every other frame departs by at most one source frame, 35 ms at 28.67 fps;
   * the window covers the same span, because both walk fps/(TARGET_FPS*k) source
     frames per output frame.
 
-A one-frame tie-break on a duplicated frame cannot move a 1-2 Hz rate, and
-`tests/test_framecache.py` fixes that directly by reading the pulse out of both.
-What it gains is a resampler that is explicit, shared by both paths and testable,
-instead of one that resides inside a filter graph. `window_indices` is now the
-definition, and `WindowDataset` uses it whether the frames came from the cache or
-from the decoder.
+A one-frame tie-break on a duplicated frame does not move a 1-2 Hz rate, and
+`tests/test_framecache.py` reads the pulse out of both paths to check that.
+`window_indices` is the definition, and `WindowDataset` uses it whether the frames
+came from the cache or from the decoder.
 """
 
 from __future__ import annotations

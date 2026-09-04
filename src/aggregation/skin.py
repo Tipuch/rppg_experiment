@@ -44,7 +44,7 @@ MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 _MODEL: SegFaceCeleb | None = None
-# Where the cached model actually is. Returned instead of the requested device,
+# Where the cached model resides. Returned instead of the requested device,
 # because the two diverge: once `segment` has fallen back to CPU, a later call
 # with no argument would otherwise be told "cuda" and move its input there, onto
 # weights that are not.
@@ -149,11 +149,11 @@ def normalise_brightness(
 
     Returns (frames, mean_y) where mean_y is one float per frame.
 
-    The subtraction is why mean_y must be kept. An rPPG pulse is a small,
-    spatially near-uniform brightness change across skin, so removing the
-    per-frame spatial mean removes most of the pulse from the pixels. It is not
-    lost -- it moves into mean_y. A model fed only the frames will underperform;
-    it needs both.
+    The subtraction is why mean_y is returned alongside. An rPPG pulse is a small,
+    spatially near-uniform brightness change across skin, so removing the per-frame
+    spatial mean removes most of the pulse from the pixels; it moves into mean_y.
+    Used only by `src.cli samples` for the contact sheets. No training or inference
+    path calls this.
 
     Y is re-centred to 128 rather than clipped at 0, because Y - mean goes
     negative for half the pixels and clipping would discard that half. Cb and Cr

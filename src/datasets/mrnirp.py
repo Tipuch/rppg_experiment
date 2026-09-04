@@ -12,7 +12,7 @@ JSON sidecar, a `_ppg.npz` trace and a packed skin mask. `WindowDataset` then
 reads MR-NIRP through the path it already uses for UBFC, with no new branch and
 nothing decoded at training time.
 
-## What the source actually is, measured rather than assumed
+## What the source is, measured
 
 **The frames are 12-bit, left-shifted into a 16-bit container.** The header says
 `maxval 65535`, but the low nibble is zero in every frame sampled and the largest
@@ -505,7 +505,7 @@ def parse_pulseox(blob: bytes) -> dict | None:
 
     Zero samples are removed as dropouts, which leaves gaps in the time axis that
     `np.interp` later bridges. `ppg_max_gap_s` is what says whether that bridge is
-    short enough to be honest.
+    short enough to state.
     """
     from scipy.io import loadmat
 
@@ -551,7 +551,7 @@ def camera_frame_times(archive: zipfile.ZipFile, n_frames: int) -> np.ndarray | 
     frame: index 0 is the NIR camera and index 1 the colour one, matching
     `Setup{0,1}.log`. Rather than trust that numbering, the log whose length is
     closest to the frame count wins -- the two differ by a frame or two and the
-    ambiguity is not worth a silent mismatch.
+    ambiguity is refused rather than resolved by guessing.
 
     This is the only exact time axis available. Car sessions ship no logs at all.
     """
@@ -949,7 +949,7 @@ def build(
     """Prepare every discovered session. Resumable; skips what is already cached.
 
     Sessions run in parallel processes because the work is per-session serial and
-    embarrassingly parallel across them: inflate, demosaic and YuNet are all CPU,
+    parallel across them: inflate, demosaic and YuNet are all CPU,
     and one session alone leaves most of the machine idle. Each worker gets its
     own scratch directory, so a crash cannot leave two of them sharing a path.
     """

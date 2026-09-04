@@ -1,21 +1,26 @@
 # Dataset inventory
 
-Nine corpora on disk. Categorised by what they can actually be used for, which is
-not the same as what they nominally contain.
+Eight corpora evaluated for this project, categorised by what each can support
+rather than by what it nominally contains.
+
+**Three are on disk:** UBFC-rPPG (`datasets/ubfc-rppg`), MR-NIRP
+(`datasets/mr-nirp`) and MCD-rPPG (`datasets/mcd_rppg`). These are the three the
+pipeline reads and the three `combine` pools. Sections C, D and E below record
+corpora that were evaluated and are **not** present in `datasets/`; obtain each
+from its own source if it is wanted.
 
 **The target is the pulse waveform, and heart rate read off it.** Blood pressure
-was the original goal and is no longer in scope. Two corpora here ship cuff
-readings and the manifest still carries nullable `sbp_mmhg` / `dbp_mmhg` columns,
-but nothing trains on them; they are recorded below as a property of the data,
-not as a target.
+was the original goal and is out of scope. Two corpora here ship cuff readings and
+the manifest carries nullable `sbp_mmhg` / `dbp_mmhg` columns, but nothing trains
+on them; they are recorded below as a property of the data, not as a target.
 
 **On the pass rates below.** They come from a spectral audit that has since been
 removed. Its resolution was its own binding constraint (7.03 bpm bins against a
-10 bpm tolerance), so read them as one weak signal, not as a gate.
+10 bpm tolerance), so they are one weak signal rather than a gate.
 
 **On the paths below.** They are written relative to `datasets/`, the default
 corpus root. Set `RPPG_DATA_ROOT` to read them from anywhere else; no reader
-hardcodes the root. See README.md § Requirements.
+hardcodes the root. See README.md, Requirements.
 
 ---
 
@@ -87,20 +92,21 @@ folder was quota-blocked for over 24 h during the original download.
 frame-cache artifacts the other corpora use, so MR-NIRP trains through the path
 UBFC does with nothing decoded at training time.
 
-**Drive split the download three ways, and each one loses sessions silently.**
-Paired inner archives give 18 Car sessions with both streams; matching the 23
-orphan `RGB-###.zip` archives on timestamps recovers 11 more; nine Indoor
-sessions arrived as top-level `Subject3_still_940-015.zip` bundles. The 12
-unmatched orphans have no PulseOX, so no label.
+**Drive split the download three ways, and each part drops sessions without
+notice.** Paired inner archives give 18 Car sessions with both streams; matching
+the 23 orphan `RGB-###.zip` archives on timestamps recovers 11 more, for 29 Car;
+nine Indoor sessions arrived as top-level `Subject3_still_940-015.zip` bundles, for
+15 Indoor. 44 sessions in total. The 12 unmatched orphans have no PulseOX, so no
+label.
 
 Orphan attribution is by clock: `pulseOxTime` against zip mtimes, with the
-timezone offset **fitted** (-6 h, 92 votes to 37) because Car is October and
+timezone offset fitted (-6 h, 92 votes to 37) because Car is October and
 Indoor the preceding February. Matches must be unique both ways; ambiguity is
 dropped. All 11 land within 1.0 s and imply 30.04-30.05 fps — neither of which
 the matcher looks at.
 
-Five things that had to be measured rather than assumed, each of which fails
-silently if guessed:
+Five properties measured rather than assumed. Each produces a plausible artifact
+rather than an error if guessed:
 
 - **Frame rate.** Indoor ships `CameraTimeLog*.txt`, one stamp per frame, exact.
   Car ships none, so its rate comes from frames over pulse span — valid only
@@ -127,8 +133,8 @@ window would read 369 MB against the model's 14.7 MB input; capped, 59 MB. UBFC
 and Car are under the cap already.
 
 Indoor scored 0/6 on the pulse measurement taken when only 24 sessions were
-ingested (Car was 8/18); the tool has since been removed, so treat it as a weak
-prior, not a verdict.
+ingested, Car 8/18. The tool has since been removed, so that is a weak prior rather
+than a current measurement.
 
 Cameras: NIR is a Grasshopper3 GS3-U3-41C6NIR (mono, MONO12); RGB a Blackfly
 BFLY-U3-23S6C (Sony IMX249, RAW12). Both crop 640x640 at even offsets, so the CFA
@@ -147,7 +153,7 @@ enum and still read. The full 300 subjects sit behind a data use agreement.
 
 ## B. Video without a recoverable pulse
 
-### MCD-rPPG -- 249 GB, and 95.5% of it scored below chance
+### MCD-rPPG -- 249 GB, 95.5% below the audit's chance rate
 
 | | |
 |---|---|
@@ -161,18 +167,18 @@ enum and still read. The full 300 subjects sit behind a data use agreement.
 simultaneously returned three different heart rates (77.3, 42.2, 77.3 for a true
 100), which no measurement of one heart can do.
 
-Cause was never fully isolated. Contributing factors, in the order the evidence
-supports them:
+Cause was not isolated. Contributing factors, in the order the evidence supports
+them:
 
 - **Auto-exposure/auto-gain.** The worst clip swings 80 LSB (std 32) across 10 s
   with the subject nearly still -- a cliff then a 4 s exponential recovery. A
   pulse is 0.1-0.5 LSB.
-- **Compression.** MPEG-4 SP at 0.12-0.39 bpp with 4:2:0 chroma is unfriendly to
-  a sub-percent, spatially smooth signal. A controlled bitrate search was
-  undecided.
+- **Compression.** MPEG-4 SP at 0.12-0.39 bpp with 4:2:0 chroma is a poor carrier
+  for a sub-percent, spatially smooth signal. A controlled bitrate search was not
+  run.
 
-**Still useful for:** 3.6 GB of real 12-lead ECG and 700 MB of contact PPG, both
-with real pulses -- a valid waveform pretraining corpus.
+**Still usable for:** 3.6 GB of 12-lead ECG and 700 MB of contact PPG, both
+carrying contact pulses, as a waveform pretraining corpus.
 
 **There is no 120 GB of duplication to reclaim, despite what `du` states.** The
 working tree and `.git/lfs/objects` already share extents through btrfs reflinks,
@@ -188,68 +194,66 @@ is already shared. Both are no-ops here.
 
 ---
 
-## C. Waveforms without a camera
+## C. Waveforms without a camera -- not on disk
 
-Neither can serve the primary target, but both carry real pulses and can
-pretrain a waveform head.
+Neither can serve the primary target, but both carry contact pulses and could
+pretrain a waveform head. Neither is present in `datasets/` and no reader exists.
 
-| dataset | on disk | contents |
+| dataset | size | contents |
 |---|---|---|
 | **BIDMC** | 209 MB | 53 ICU records, 8 min each. PPG, ECG, RR, SpO2, arterial pressure waveform on 10 records, and two-annotator breath labels. |
 | **BUT PPG** | 282 MB | 3888 records, 50 subjects. ECG at 1 kHz with R-peak annotations, smartphone PPG. |
 
 ---
 
-## D. Synthetic
+## D. Synthetic -- not on disk
 
-**SCAMPS** (3.6 GB). 2800 synthetic clips (labels as `.mat` and `.csv` -- the same
+**SCAMPS** (3.6 GB). 2800 synthetic clips (labels as `.mat` and `.csv`, the same
 20 signals twice) plus 10 videos. PPG, ECG and breathing waveforms, pose and 13
-action units. Official 2000/400/400 split. Synthetic, so pretraining only. No
-reader is wired up.
+action units. Official 2000/400/400 split. Synthetic, so pretraining only. Not
+present in `datasets/` and no reader exists.
 
 ---
 
-## E. Unusable here
+## E. Evaluated and rejected -- not on disk
 
-**Music / working-memory** (1.6 GB). No facial video -- only FaceReader
-*expression scores* derived from videos that were never distributed. Carries
-Empatica HR and IBI, Biopac ECG/EDA/EMG/RESP and 44-channel fNIRS, none of which
-this project can use.
+**Music / working-memory** (1.6 GB). No facial video, only FaceReader expression
+scores derived from videos that were never distributed. Carries Empatica HR and
+IBI, Biopac ECG/EDA/EMG/RESP and 44-channel fNIRS, none of which this project can
+read.
 
 ---
 
 ## Training on all three
 
 `src.cli combine` pools UBFC, MR-NIRP and MCD into `build/clips_all.parquet` --
-**3692 clips, 666 subjects, 183.1 h** -- with one split assigned over the pooled
-table, grouped by subject and **stratified by source** so no corpus can be handed
-a whole side. Achieved **90.06 / 2.93 / 7.01** in segments. `train` defaults to
-this manifest and reads its split rather than deriving one.
+3692 clips, 666 subjects, 183.1 h -- with one split assigned over the pooled table,
+grouped by subject and stratified by source so each corpus reaches dev and test.
+Achieved 90.06 / 2.93 / 7.01 in segments. `train` defaults to this manifest and
+reads its split rather than deriving one.
 
-MCD is **98.45%** of those segments against MR-NIRP's 1.09% and UBFC's 0.46%, so
-an aggregate over any split is a measurement of MCD. Hence per-source reporting,
-and `--stride` to subsample.
+MCD is 98.45% of those segments against MR-NIRP's 1.09% and UBFC's 0.46%, so an
+aggregate over any split is largely a measurement of MCD. Results are reported per
+source, and `--stride` subsamples.
 
 ## Summary
 
-| category | corpora | subjects with usable video |
-|---|---|---|
-| A. video + pulse | UBFC-rPPG, MR-NIRP | 50 UBFC, 18 MR-NIRP |
-| B. video, no recoverable pulse | MCD-rPPG | 600, none usable from pixels |
-| C. waveforms, no video | BIDMC, BUT PPG | n/a |
-| D. synthetic | SCAMPS | n/a |
-| E. unusable | music/working-memory | n/a |
+| category | corpora | on disk | subjects with usable video |
+|---|---|---|---|
+| A. video + pulse | UBFC-rPPG, MR-NIRP | yes | 50 UBFC, 18 MR-NIRP |
+| B. video, no recoverable pulse | MCD-rPPG | yes | 600, none usable from pixels |
+| C. waveforms, no video | BIDMC, BUT PPG | no | n/a |
+| D. synthetic | SCAMPS | no | n/a |
+| E. rejected | music/working-memory | no | n/a |
 
-UBFC remains the corpus the pipeline is built around. MR-NIRP adds **18 subjects
-and 117.9 min of video** with per-frame contact PPG, in conditions UBFC has none
-of: in-car, IR-illuminated, and with graded head motion.
+UBFC is the corpus the pipeline is built around. MR-NIRP adds 18 subjects and
+117.9 min of video with per-frame contact PPG, in conditions UBFC does not cover:
+in-car, IR-illuminated, and with graded head motion.
 
-## The process lesson
+## What the checks found
 
-Three training runs, ~10 GPU hours, all stabilised to predicting the training
-mean before the data was checked.
-
-**Look at the data before training on it.** On MR-NIRP an afternoon of checking
-turned up a wrong frame-rate assumption, an undocumented Bayer pattern, a 12-bit
-alignment that would have trained on black frames, a monochrome stream labelled
-`RGB`, and dropouts in every Indoor trace. None of them raises an exception.
+Checking MR-NIRP before training turned up a wrong frame-rate assumption, an
+undocumented Bayer pattern, a 12-bit alignment that would have produced black
+frames, a monochrome stream labelled `RGB`, and dropouts in every Indoor trace.
+None of them raises an exception, and `src.cli samples` and `src.cli info` exist
+to make that class of fault visible before a run starts.

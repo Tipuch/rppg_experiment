@@ -7,8 +7,7 @@ from the repository root behaves as it always has:
     datasets/   the corpora, obtained separately -- see DATASETS.md
     build/      manifests, frame caches, masks, run directories, figures
 
-Both are repointable from the environment, which is the whole reason this module
-exists. The corpora are tens of gigabytes of human-subject video that will not
+Both are repointable from the environment, which is why this module exists. The corpora are tens of gigabytes of human-subject video that will not
 always live beside the source, and the frame cache is large enough to want its own
 volume:
 

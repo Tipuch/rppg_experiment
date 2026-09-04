@@ -1,15 +1,12 @@
 """Render inspection samples: one clip per source, through the full skin pipeline.
 
-    uv run python -m src.aggregation.make_samples
-
 Writes to build/samples/: a contact sheet per clip showing the original crop,
 the skin mask, and the normalised output, plus the raw frames and the mean-Y
-trace so the numbers can be checked rather than just eyeballed.
+trace, so the numbers can be read as well as the picture.
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import cv2
@@ -22,12 +19,12 @@ from .video import probe, read_frames
 
 OUT = BUILD_ROOT / "samples"
 CROP = 256
-SECONDS = 5.0           # enough of each clip to see the pipeline behave
 CONTACT_FRAMES = 4
-PER_SOURCE = 4          # distinct subjects per dataset, for manual review
+DEFAULT_SECONDS = 5.0
+DEFAULT_PER_SOURCE = 4
 
 
-def prepare(video: Path, seconds: float = SECONDS) -> dict | None:
+def prepare(video: Path, seconds: float = DEFAULT_SECONDS) -> dict | None:
     """Decode, crop to a square 256 face box, segment skin, normalise brightness.
 
     Decoded at native fps: resampling would discard the waveform detail the
@@ -73,13 +70,10 @@ def contact_sheet(result: dict) -> np.ndarray:
     return np.vstack(rows)[:, :, ::-1]          # back to BGR for imwrite
 
 
-def _targets() -> list[tuple[str, Path]]:
-    """A few distinct subjects per corpus, so a reviewer sees real variety.
+def _targets(per_source: int = DEFAULT_PER_SOURCE) -> list[tuple[str, Path]]:
+    """Up to `per_source` distinct subjects per corpus.
 
-    Driven by the reader registry rather than a hardcoded list. The list version
-    named a corpus that had since been removed from disk alongside mcd, so this
-    rendered samples for one corpus and silently skipped the ones actually being
-    trained on.
+    Driven by the reader registry rather than a hardcoded list.
 
     MR-NIRP is absent by construction: it ships no container this can decode, and
     its own ingest already writes a crop per session.
@@ -101,14 +95,16 @@ def _targets() -> list[tuple[str, Path]]:
             if path.exists() and path.stat().st_size > 1_000_000:
                 out.append((name, path))
                 seen.add(row["subject_id"])
-            if len(seen) >= PER_SOURCE:
+            if len(seen) >= per_source:
                 break
     return out
 
 
-def main() -> int:
+def main(
+    per_source: int = DEFAULT_PER_SOURCE, seconds: float = DEFAULT_SECONDS
+) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-    targets = _targets()
+    targets = _targets(per_source)
     if not targets:
         print("no source videos found")
         return 1
@@ -116,7 +112,7 @@ def main() -> int:
     for source, video in targets:
         print(f"{source}: {video.name}", flush=True)
         try:
-            result = prepare(video)
+            result = prepare(video, seconds)
         except Exception as exc:  # noqa: BLE001 - one unrenderable sample must not end the sheet
             print(f"  FAILED {type(exc).__name__}: {exc}")
             continue
@@ -138,7 +134,3 @@ def main() -> int:
 
     print(f"\nsamples in {OUT.resolve()}")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

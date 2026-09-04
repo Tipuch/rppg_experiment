@@ -4,20 +4,15 @@ One row per recording, not per window. Windows are chosen at load time, so every
 frame of every recording stays reachable instead of being fixed into a fixed
 sample at build time.
 
-This is where the expensive, deterministic work happens: YuNet finds one face box
-per clip and SegFace produces one median skin mask. Neither can run in the training
-loop -- SegFace is ~20-50 ms per frame, so a single 160-frame clip would cost longer
-than the training step itself -- but both are tiny to store. A mask is 256x256 bits,
-so all 3605 clips together are a few MB against the ~3 TB that materialising frames
+YuNet finds one face box per clip and SegFace produces one median skin mask.
+SegFace runs at ~20-50 ms per frame, so a 160-frame clip would cost longer than the
+training step itself; both outputs are small enough to store. A mask is 256x256 bits,
+so all 3692 clips together are a few MB, against the ~3 TB that materialising frames
 would need.
-
-    uv run python -m src.model.clips
 """
 
 from __future__ import annotations
 
-import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
@@ -102,22 +97,6 @@ def build_clip(
     }
 
 
-def iter_sources(
-    limit_per_source: int | None = None,
-) -> Iterator[tuple[str, str, str, Path, dict[str, float]]]:
-    """Every discoverable recording, from the per-corpus readers in src.datasets.
-
-    This function used to hold one hand-written block per corpus -- glob, parse
-    labels, check the video exists, yield. Those blocks are now `discover()` in
-    the reader that owns the format, and this walks them in REGISTRY order, which
-    is the order they were written in here, so an existing manifest rebuilds row
-    for row.
-    """
-    from ..datasets import iter_sessions
-
-    yield from iter_sessions(limit_per_source)
-
-
 def _write(rows: list[dict]) -> pl.DataFrame:
     df = pl.DataFrame(rows).select(
         [pl.col(k).cast(v).alias(k) for k, v in CLIP_SCHEMA.items()]
@@ -130,10 +109,12 @@ def _write(rows: list[dict]) -> pl.DataFrame:
 def main(limit_per_source: int | None = None, resume: bool = True) -> int:
     """Build the manifest, skipping clips already present when resume is set.
 
-    The full pass is thousands of clips and takes hours, so it has to survive being
-    interrupted. Completed rows are reloaded from the existing parquet rather than
-    recalculated.
+    The full pass is thousands of clips and takes hours, so it survives being
+    interrupted: completed rows are reloaded from the existing parquet rather than
+    recalculated. `resume=False` rebuilds from scratch.
     """
+    from ..datasets import iter_sessions
+
     rows: list[dict] = []
     done: set[str] = set()
     if resume and OUT_PARQUET.exists():
@@ -144,7 +125,7 @@ def main(limit_per_source: int | None = None, resume: bool = True) -> int:
 
     failures = 0
     processed = 0
-    for clip_id, source, subject, video, targets in iter_sources(limit_per_source):
+    for clip_id, source, subject, video, targets in iter_sessions(limit_per_source):
         if clip_id in done:
             continue
         try:
@@ -175,8 +156,3 @@ def main(limit_per_source: int | None = None, resume: bool = True) -> int:
                                     pl.col("subject_id").n_unique().alias("subjects"),
                                     pl.col("duration_s").sum().alias("total_s")))
     return 0
-
-
-if __name__ == "__main__":
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    sys.exit(main(limit))

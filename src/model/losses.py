@@ -2,27 +2,26 @@
 
     L = alpha * L_time + beta * L_freq
 
-`L_time` is the negative Pearson correlation, which is scale- and offset-invariant
--- required here, because the network sees skin brightness and cannot know the
-contact sensor's gain, so demanding absolute agreement would penalise a perfectly
-shaped prediction for being the wrong size.
+`L_time` is the negative Pearson correlation, which is scale- and offset-invariant.
+That is required here: the network sees skin brightness and cannot know the contact
+sensor's gain, so demanding absolute agreement would penalise a correctly shaped
+prediction for being the wrong size.
 
 `L_freq` is a cross-entropy between the predicted spectrum and the ground truth's
-dominant frequency. It exists because correlation alone is indifferent to *which*
-periodicity it locked onto: a prediction at twice the true rate can correlate
-respectably while being wrong by 70 bpm.
+dominant frequency. Correlation alone is indifferent to *which* periodicity it
+locked onto: a prediction at twice the true rate can correlate respectably while
+being wrong by 70 bpm.
 
 **Weights.** CFMamba leaves alpha and beta unstated. RhythmFormer Section 3.4 uses
-0.2 and 1.0, and its Table 13 shows the balance is not minor -- the temporal
-term alone reaches 3.56 MAE, the frequency term alone reduces to 13.32, and
-together they reach 3.13. Those are the defaults.
+0.2 and 1.0 for the same construction; this project runs alpha at 0.8 on its own
+measurement. See ARCHITECTURE.md section 6 and DEFAULT_ALPHA below.
 
-**Why the frequency term is written here rather than imported.** The vendored
-`TorchLossComputer.Frequency_loss` is the same construction, but it obtains its
+**The frequency term is written here rather than imported.** The vendored
+`TorchLossComputer.Frequency_loss` is the same construction, but obtains its
 ground-truth rate through `calculate_metric_per_video`, which hardcodes a
-first-order 0.6-3.3 Hz band-pass. Importing it would put a 36-198 bpm band inside
-the *loss*, where it is harder to notice than in a metric. The candidate range
-below is CFMamba's own 45-150 bpm.
+first-order 0.6-3.3 Hz band-pass. Importing it would put a 36-198 bpm range inside
+the *loss*, where it is harder to see than in a metric. The candidate range below
+is CFMamba's own 45-150 bpm.
 """
 
 from __future__ import annotations
@@ -35,16 +34,16 @@ import torch.nn.functional as F
 from .waveform import neg_pearson
 
 # CFMamba Section 4.2: "The frequency range [0.75, 2.5] Hz covers the standard
-# physiological range of human heart rates (45-150 bpm)." One candidate per bpm,
-# so the cross-entropy is over 105 classes at 1 bpm resolution -- finer than the
-# 11.25 bpm an unpadded 160-frame DFT would give.
+# physiological range of human heart rates (45-150 bpm)." One candidate per bpm.
+# BPM_MAX is exclusive, so the cross-entropy is over 105 classes covering 45-149 at
+# 1 bpm resolution -- finer than the 11.25 bpm an unpadded 160-frame DFT gives.
 BPM_MIN, BPM_MAX = 45, 150
 
 # CFMamba Eq. 19 states alpha and beta as symbols and gives no values.
 # RhythmFormer Section 3.4 Table 13 supplied 0.2 and 1.0, and this project ran that
-# way until REPORT_cfmamba.md finding 2: the temporal term went flat from epoch 2,
-# and at alpha=0.2 it was ~1.5% of the final loss -- the optimiser had almost no
-# reason to fix the waveform the model exists to predict. beta stays at 1.0.
+# way until it measured, over a 15-epoch UBFC run, that the temporal term stopped
+# moving from epoch 2 and at alpha=0.2 contributed ~1.5% of the total loss. beta
+# stays at 1.0. ARCHITECTURE.md section 6 records the numbers.
 DEFAULT_ALPHA = 0.8
 DEFAULT_BETA = 1.0
 

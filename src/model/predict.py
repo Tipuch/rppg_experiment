@@ -30,8 +30,8 @@ DEFAULT_RUNS = BUILD_ROOT / "runs"
 def latest_checkpoint(runs_dir: Path = DEFAULT_RUNS) -> Path:
     """Most recently written checkpoint, across run directories.
 
-    One level down only: `build/runs/best.pt` sits at the top level and carries no
-    `config`, so `load_model` cannot rebuild an architecture for it.
+    One level down only: a file at `build/runs/` top level carries no `config`, so
+    `load_model` cannot rebuild an architecture for it.
     """
     runs_dir = Path(runs_dir)
     found = list(runs_dir.glob("*/final.pt")) + list(runs_dir.glob("*/last.pt"))
@@ -47,8 +47,8 @@ def config_from_checkpoint(saved: dict) -> TrainConfig:
     """Rebuild a TrainConfig from the dict `asdict` flattened into the checkpoint.
 
     `asdict` stringified `out_dir` and turned the tuples into lists. Unknown keys
-    are dropped and absent ones take the dataclass default, so a checkpoint written
-    by an older revision still loads.
+    are dropped and absent ones take the dataclass default, so a checkpoint from an
+    earlier revision still loads.
     """
     known = {f.name for f in fields(TrainConfig)}
     kept = {k: v for k, v in saved.items() if k in known}
@@ -63,8 +63,8 @@ def config_from_checkpoint(saved: dict) -> TrainConfig:
 def load_model(path: Path, device: str = "cuda") -> tuple[CFMambaPhys, TrainConfig, dict]:
     """Weights plus the configuration they were trained under.
 
-    `build_model` is the constructor the training run used, so every ablation flag
-    follows the file rather than this process's defaults.
+    `build_model` is the constructor the training run used, so each ablation
+    setting follows the file rather than this process's defaults.
     """
     state = load_checkpoint(Path(path))
     if "config" not in state:
@@ -81,9 +81,9 @@ def load_model(path: Path, device: str = "cuda") -> tuple[CFMambaPhys, TrainConf
 def clip_name(video: Path) -> str:
     """A name for this recording that includes its directory.
 
-    The stem alone is not unique: every UBFC-rPPG recording is called `vid.avi`,
-    so a plain stem would write all 42 skin masks to build/masks/vid.npy and each
-    run would invisibly segment against the previous subject's face.
+    The stem alone is not unique: every UBFC-rPPG recording is called `vid.avi`, so
+    a plain stem would write all 42 skin masks to build/masks/vid.npy and each run
+    would segment using the previous subject's face.
     """
     return f"{video.resolve().parent.name}__{video.stem}"
 
@@ -94,10 +94,10 @@ def prepare(
 ) -> tuple[WindowDataset, pl.DataFrame, dict]:
     """Detect the face, segment the skin, and enumerate the windows to run.
 
-    `clips.build_clip` is the per-clip half of the manifest builder and returns
-    exactly the row `WindowDataset` reads: `box_x/box_y/box_side`, `mask_path`, fps
-    and duration. Running it inline is what gives an unlisted video the same
-    preprocessing a training window got.
+    `clips.build_clip` is the per-clip part of the manifest builder and returns the
+    row `WindowDataset` reads: `box_x/box_y/box_side`, `mask_path`, fps and
+    duration. Running it inline gives an unlisted video the same preprocessing a
+    training window gets.
     """
     from . import clips as clips_mod
 
@@ -129,9 +129,9 @@ def prepare(
             f"{start_s + (seconds or 0):.1f}s of a {row['duration_s']:.1f}s recording."
         )
 
-    # A recording that came out of one of the corpora has its contact PPG beside
-    # it, and that is worth plotting against. An arbitrary video does not, and
-    # `_waveform` would hand back zeros rather than raise -- so ask first.
+    # A recording from one of the corpora has its contact PPG beside it, worth
+    # plotting against. An arbitrary video does not, and `_waveform` returns zeros
+    # rather than raising, so check first.
     has_truth = load_ppg(video.parent, video_path=video, fps=row["fps"]) is not None
 
     dataset = WindowDataset(
@@ -165,8 +165,8 @@ def run_windows(
     truth: list[np.ndarray] = []
     for batch in loader:
         # train=False fixes the resampling factor at 1.0, so a rate read at
-        # TARGET_FPS is a real rate. `evaluate` has to undo the stretch; check
-        # rather than inherit the assumption.
+        # TARGET_FPS is a rate in real units. `evaluate` has to undo the stretch;
+        # check here rather than inherit the assumption.
         scale = batch["fps_scale"].numpy()
         if not np.allclose(scale, 1.0):
             raise RuntimeError(
@@ -190,9 +190,9 @@ def stitch(windows: np.ndarray) -> np.ndarray:
     """Lay the windows end to end, z-scoring each one first.
 
     Nothing in training fixed the scale: Eq. 19's temporal term is negative
-    Pearson, which is invariant to a positive scale factor, so windows can come
-    back at different amplitudes for the same loss. The sign is not invariant --
-    Pearson fixes it -- so no sign alignment is needed.
+    Pearson, which is invariant to a positive scale factor, so windows can come back
+    at different amplitudes for the same loss. The sign is not invariant, so no sign
+    alignment is needed.
 
     Seams are left where they fall and drawn in the plot.
     """
@@ -211,9 +211,9 @@ def analyse(
     Per-window rates are read off the windows themselves, before the stitch, so
     their spread is independent of it.
 
-    `truth` is the contact PPG over the same windows. It goes through the identical
-    stitch and band-pass -- its amplitude is no more a measurement than the
-    prediction's -- so the two traces are comparable sample for sample.
+    `truth` is the contact PPG over the same windows. It goes through the same
+    stitch and band-pass, since its amplitude is no more a measurement than the
+    prediction's, so the two traces are comparable sample for sample.
     """
     trace = stitch(windows)
     filtered = bandpass(trace, fps)
@@ -224,9 +224,8 @@ def analyse(
     return {
         "trace": filtered,
         "peaks": peaks,
-        # The reported rate. `bpm_fft` is kept beside it as the spectral
-        # cross-check -- the two disagreeing is the signal that the window holds
-        # more than one rhythm.
+        # The reported rate. `bpm_fft` sits beside it as the spectral cross-check:
+        # the two disagreeing indicates the window holds more than one rhythm.
         "bpm_beats": interval_hr(filtered, fps, filtered=True),
         "bpm_fft": heart_rate(filtered, fps, filtered=True),
         "per_window_bpm": per_window,

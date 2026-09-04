@@ -1,8 +1,8 @@
 """Face ROI selection.
 
 One box per clip, taken as the median over sampled frames. Per-frame boxes jitter,
-and that jitter is motion noise competing with the pulse signal we are trying to
-recover, so a stable box beats a tight one here.
+and that jitter is motion noise competing with the pulse signal, so the median box
+is used rather than a per-frame one.
 """
 
 from __future__ import annotations
@@ -20,12 +20,11 @@ SCORE_THRESHOLD = 0.7
 # Faces are wider than the useful ROI is tall; pad the box then square it so the
 # forehead and cheeks (strongest rPPG regions) survive the crop.
 #
-# rPPG-Toolbox, which all three source papers used, enlarges by LARGE_BOX_COEF=1.5
-# -- equivalent to BOX_PAD=0.5 here. 0.25 is a intentional deviation, on the
-# reasons that a tighter crop carries fewer non-skin pixels and this pipeline
-# already has a skin mask and PGA's Gaussian prior doing that job. Which is
-# actually better is measurable with POS, which needs no training; `pad` exists so
-# that measurement can be run without editing this file.
+# rPPG-Toolbox, which all three source papers used, enlarges by LARGE_BOX_COEF=1.5,
+# equivalent to BOX_PAD=0.5 here. 0.25 is a deviation: a tighter crop carries fewer
+# non-skin pixels, and this pipeline already has a skin mask and PGA's Gaussian
+# prior. Which setting scores better is measurable with POS, which needs no
+# training; `pad` is a parameter so that measurement runs without editing this file.
 BOX_PAD = 0.25
 
 

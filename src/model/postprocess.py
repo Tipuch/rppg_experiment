@@ -6,16 +6,14 @@ peak. Both also state they used the rPPG-Toolbox, which is vendored under
 tools/rPPG-Toolbox -- so the primitives here are imported from it rather than
 rewritten, and the numbers stay comparable with every method in its tables.
 
-**The toolbox's own wrapper is not reused, intentionally.** Its
-`calculate_metric_per_video` hardcodes `butter(1, [0.6, 3.3])` -- a *first*-order
-filter over a *wider* band than either paper specifies. Its own comments say to
-use 0.75 and 2.5 "to more closely match results in the NeurIPS 2023 toolbox
-paper", but the constants are not parameters, so matching the papers means calling
-the primitives directly. Invisibly inheriting 0.6-3.3 Hz would admit a 36 bpm drift
-and a 198 bpm harmonic into every heart-rate estimate.
+The toolbox's own wrapper is not reused. Its `calculate_metric_per_video`
+hardcodes `butter(1, [0.6, 3.3])` -- a first-order filter over a wider range than
+either paper specifies. Its comments say to use 0.75 and 2.5 "to more closely match
+results in the NeurIPS 2023 toolbox paper", but the constants are not parameters,
+so matching the papers means calling the primitives directly. Inheriting 0.6-3.3 Hz
+admits a 36 bpm drift and a 198 bpm harmonic into every heart-rate estimate.
 
-The band is the same 0.75-2.5 Hz the DF-FFN's Gaussian mask is constrained to, and
-for the same reason: outside it, a peak is not a pulse.
+The range is the same 0.75-2.5 Hz the DF-FFN's Gaussian mask is constrained to.
 """
 
 from __future__ import annotations
@@ -41,8 +39,8 @@ def _vendored() -> ModuleType:
 
     By path rather than by `sys.path` insertion: the toolbox has top-level modules
     named `evaluation`, `dataset` and `tools`, and putting its root on the import
-    path would let any of them shadow something of ours later. The module itself
-    imports only numpy and scipy, so it loads cleanly in isolation.
+    path would let any of them shadow a module of this project. The module imports
+    only numpy and scipy, so it loads in isolation.
     """
     path = _TOOLBOX / "evaluation" / "post_process.py"
     if not path.exists():
@@ -76,11 +74,10 @@ def bandpass(wave: np.ndarray, fps: float = 30.0) -> np.ndarray:
 def heart_rate(wave: np.ndarray, fps: float = 30.0, filtered: bool = False) -> float:
     """Dominant cardiac-band frequency of a waveform, in bpm.
 
-    The periodogram is zero-padded to the next power of two, which interpolates
-    the spectrum so the peak is not forced onto a coarse bin grid: at 160 frames
-    and 30 fps the raw bins are 11.25 bpm apart, wider than the accuracy being
-    reported. Padding adds no information -- it stops the grid from destroying
-    what is already there.
+    The periodogram is zero-padded to the next power of two, which interpolates the
+    spectrum so the peak is not forced onto a coarse bin grid: at 160 frames and
+    30 fps the raw bins are 11.25 bpm apart, wider than the accuracy reported.
+    Padding adds no information; it stops the grid from discarding what is there.
     """
     wave = np.asarray(wave, dtype=np.float64).ravel()
     if wave.size < 8 or not np.isfinite(wave).all() or np.ptp(wave) == 0:
@@ -96,9 +93,9 @@ def _vertex_shift(
     """Offset of a parabola's vertex from its middle sample, in samples.
 
     Three equally spaced points define one parabola, and its vertex is where the
-    peak actually sits. Two readouts need this and for the same reason: both
-    quantise a continuous position onto a grid coarser than the accuracy being
-    reported -- a spectral peak onto 3.5 bpm bins, a beat onto 33 ms frames.
+    peak sits. Two readouts need this for the same reason: both quantise a
+    continuous position onto a grid coarser than the accuracy reported -- a spectral
+    peak onto 3.5 bpm bins, a beat onto 33 ms frames.
 
     Clipped to half a sample. A larger offset means the three points do not
     bracket a peak, and the middle one was not a maximum.
@@ -136,11 +133,10 @@ def spectral_hr(
 ) -> float:
     """Dominant cardiac-band rate, with the refinements `heart_rate` omits.
 
-    `heart_rate` is the vendored toolbox's readout and stays that way, so the
-    numbers this project reports remain comparable with every method in the
-    toolbox's own tables. This is the same measurement with the steps production
-    PPG readouts add on top: a window function, heavier zero-padding, and
-    interpolation of the peak between bins.
+    `heart_rate` is the vendored toolbox's readout, so numbers computed through it
+    stay comparable with the toolbox's own tables. This is the same measurement plus
+    the steps production PPG readouts add: a window function, heavier zero-padding,
+    and interpolation of the peak between bins.
     """
     wave = np.asarray(wave, dtype=np.float64).ravel()
     if wave.size < 8 or not np.isfinite(wave).all() or np.ptp(wave) == 0:
@@ -159,10 +155,9 @@ def spectral_hr(
 
 
 # A beat counted twice halves the median interval, so the guard in `beats` fires
-# when beat timing claims a rate this multiple of the spectral peak or higher. No
-# pulse does that: the spectrum of a real 115 bpm pulse has its fundamental at
-# 115, not at 66. 1.4 leaves room for the spectral peak's own error while sitting
-# well below the 2.0 a fully doubled trace gives.
+# when beat timing claims a rate this multiple of the spectral peak or higher. The
+# spectrum of a 115 bpm pulse has its fundamental at 115, not at 66. 1.4 leaves room
+# for the spectral peak's own error and sits below the 2.0 a doubled trace gives.
 DOUBLE_BEAT_RATIO = 1.4
 # Kept peaks, as a fraction of the median prominence, once the guard fires. On the
 # windows that fail, the notch peaks come in at 0.00-0.25 of the median while the
@@ -188,24 +183,23 @@ def beats(trace: np.ndarray, fps: float = 30.0) -> np.ndarray:
     Minimum spacing is the period of 2.5 Hz, the top of the reporting band, so two
     peaks cannot fall inside one beat. `trace` is expected band-passed.
 
-    **The spacing floor alone does not stop a beat being counted twice.** The
-    dicrotic notch -- the aortic valve closing, part of every real pulse -- is a
-    second local maximum on the diastolic decay, and at 66 bpm it lands about 15
-    frames after the systolic peak, past the 12-frame floor. `find_peaks` then
-    returns 17 peaks for 10 cycles, more than half the intervals are half-cycles,
-    and the median reads 115 bpm against a 66 bpm pulse. Measured on
-    `mrnirp/indoor_Subject5_still_940` and `mcd/6667_USBVideo_after`, and it is
-    intermittent within one recording: the notch grows and shrinks with perfusion,
-    so the same subject reads correctly in the next window.
+    The spacing floor alone does not stop a beat being counted twice. The dicrotic
+    notch -- the aortic valve closing, present in a normal pulse -- is a second local
+    maximum on the diastolic decay, and at 66 bpm it lands about 15 frames after the
+    systolic peak, past the 12-frame floor. `find_peaks` then returns 17 peaks for
+    10 cycles, more than half the intervals are half-cycles, and the median reads
+    115 bpm for a 66 bpm pulse. Measured on `mrnirp/indoor_Subject5_still_940` and
+    `mcd/6667_USBVideo_after`. It is intermittent within one recording: the notch
+    grows and shrinks with perfusion, so the same subject reads correctly in the
+    next window.
 
-    A prominence floor is not applied unconditionally, because on a noisy
-    *predicted* waveform it discards real beats -- swept over the 788 labelled
-    windows in `build/readout_test.npz`, an unconditional floor at half the median
-    prominence cost 0.34 bpm of MAE and 1.4 bpm of RMSE. It is applied only when
-    beat timing and the spectrum disagree in the direction only double-counting
-    produces. That repair is a small gain on the same sweep (MAE 3.81 to 3.79,
-    RMSE 6.71 to 6.65, rho 0.858 to 0.861) and removes every split-beat window
-    from MR-NIRP's share of the test split.
+    The prominence floor is conditional, because on a noisy predicted waveform an
+    unconditional floor discards real beats: over the 788 labelled windows in
+    `build/readout_test.npz` it cost 0.34 bpm of MAE and 1.4 bpm of RMSE. Applied
+    only when beat timing and the spectrum disagree in the direction double-counting
+    produces, the same sweep improves (MAE 3.81 to 3.79, RMSE 6.71 to 6.65, rho
+    0.858 to 0.861) and no split-beat window is left in MR-NIRP's share of the test
+    split.
     """
     trace = np.asarray(trace, dtype=np.float64).ravel()
     if trace.size < 8 or not np.isfinite(trace).all():
@@ -229,10 +223,10 @@ def beats(trace: np.ndarray, fps: float = 30.0) -> np.ndarray:
 def refine(trace: np.ndarray, peaks: np.ndarray) -> np.ndarray:
     """Sub-sample peak positions, by the vertex of a parabola through 3 points.
 
-    An integer index quantises the interval by one frame, which at 30 fps is 3.4
-    bpm at 110 and 6 bpm at 150 -- coarser than the difference this number exists
-    to show. The band-pass leaves a smooth trace, so the three samples around a
-    peak locate its vertex.
+    An integer index quantises the interval by one frame, which at 30 fps is 3.4 bpm
+    at 110 and 6 bpm at 150 -- coarser than the differences being reported. The
+    band-pass leaves a smooth trace, so the three samples around a peak locate its
+    vertex.
     """
     if len(peaks) == 0:
         return peaks.astype(np.float64)
@@ -245,18 +239,16 @@ def refine(trace: np.ndarray, peaks: np.ndarray) -> np.ndarray:
 def interval_hr(
     wave: np.ndarray, fps: float = 30.0, filtered: bool = False
 ) -> float:
-    """Heart rate from the median inter-beat interval. **The readout this project
-    reports.**
+    """Heart rate from the median inter-beat interval. The readout this project reports.
 
-    This is what pulse oximeters and wrist wearables display: detect one peak per
-    cardiac cycle, difference their positions, take the median. Median rather than
+    Detect one peak per cardiac cycle, difference their positions, take the median.
+    This is what pulse oximeters and wrist wearables display. Median rather than
     mean because one missed or doubled beat moves a mean of a dozen intervals by
     several bpm.
 
-    Chosen over the spectral peak on evidence, not on principle. Swept over 1569
-    labelled test windows it cut RMSE from 8.18 to 6.60 bpm and raised rho from
-    0.793 to 0.857, for 0.35 bpm more MAE -- it makes fewer large misses and
-    slightly more small ones. `src.cli readout` reruns that sweep.
+    Over 1569 labelled test windows it cut RMSE from 8.18 to 6.60 bpm and raised rho
+    from 0.793 to 0.857, for 0.35 bpm more MAE: fewer large misses, slightly more
+    small ones. `src.cli readout` reruns that sweep.
     """
     wave = np.asarray(wave, dtype=np.float64).ravel()
     if wave.size < 8 or not np.isfinite(wave).all() or np.ptp(wave) == 0:
@@ -271,9 +263,9 @@ def snr(wave: np.ndarray, reference_bpm: float, fps: float = 30.0,
     """Signal-to-noise ratio in dB, CFMamba Eqs. 26-27.
 
     Signal is the power within 6 bpm of the reference rate and of its second
-    harmonic; noise is everything else in the band. The harmonic is included
-    because a real pulse has one -- a prediction that captures only the
-    fundamental is a sinusoid, not a waveform.
+    harmonic; noise is the rest of the range. The harmonic is included because a
+    pulse has one: a prediction carrying only the fundamental is a sinusoid rather
+    than a pulse waveform.
     """
     wave = np.asarray(wave, dtype=np.float64).ravel()
     if wave.size < 8 or not np.isfinite(wave).all() or not np.isfinite(reference_bpm):
@@ -289,10 +281,10 @@ def compare(predicted: np.ndarray, truth: np.ndarray, fps: float = 30.0) -> dict
     """Everything reportable for one window, from a prediction and its target.
 
     The ground-truth rate is taken from the contact PPG over the same window, not
-    from the manifest's label column. DATASETS.md records subject24 named 96 bpm
+    from the manifest's label column. DATASETS.md records subject24 labelled 96 bpm
     against a PPG reading of 127.2, plus four other UBFC subjects whose HR readout
-    drops out; the waveform on those same subjects is intact. Reading the rate off
-    the signal avoids the fault entirely, and is what the toolbox does.
+    drops out while the waveform stays intact. Reading the rate off the signal
+    avoids that, and is what the toolbox does.
     """
     pred_filtered = bandpass(predicted, fps)
     truth_filtered = bandpass(truth, fps)

@@ -16,8 +16,8 @@ Three things have to come back or the continuation is a different experiment:
   history     the per-epoch records, or the saved history forfeits every epoch before
               the resume.
 
-And because the cosine's shape is a function of `epochs`, `batch_size`, `n_frames`
-and `accum_steps`, resuming with any of those changed would continue a *different*
+And because the cosine's shape is a function of `epochs`, `batch_size` and
+`n_frames`, resuming with any of those changed would continue a *different*
 schedule from the one the stored step counter refers to. That is checked rather
 than trusted.
 """
@@ -98,21 +98,20 @@ def test_the_next_epoch_and_history_survive(tmp_path) -> None:
 
 def test_a_matching_config_is_resumable() -> None:
     cfg = TrainConfig(epochs=30, batch_size=4, n_frames=300)
-    check_resumable({"epochs": 30, "batch_size": 4, "n_frames": 300,
-                     "accum_steps": 1}, cfg, 13418, 13418)
+    check_resumable({"epochs": 30, "batch_size": 4, "n_frames": 300},
+                    cfg, 13418, 13418)
 
 
 @pytest.mark.parametrize("field,value", [
     ("epochs", 6),
     ("batch_size", 8),
     ("n_frames", 160),
-    ("accum_steps", 2),
 ])
 def test_a_changed_schedule_input_is_refused(field, value) -> None:
     """Each of these changes the cosine's length, so the stored step count no
     longer refers to the schedule being rebuilt."""
     cfg = TrainConfig(epochs=30, batch_size=4, n_frames=300)
-    saved = {"epochs": 30, "batch_size": 4, "n_frames": 300, "accum_steps": 1}
+    saved = {"epochs": 30, "batch_size": 4, "n_frames": 300}
     saved[field] = value
     with pytest.raises(RuntimeError, match=field):
         check_resumable(saved, cfg, 13418, 13418)
@@ -122,6 +121,6 @@ def test_a_changed_step_count_is_refused() -> None:
     """A different manifest gives a different steps_per_epoch and so a different
     cosine, even when every config field matches."""
     cfg = TrainConfig(epochs=30, batch_size=4, n_frames=300)
-    saved = {"epochs": 30, "batch_size": 4, "n_frames": 300, "accum_steps": 1}
+    saved = {"epochs": 30, "batch_size": 4, "n_frames": 300}
     with pytest.raises(RuntimeError, match="steps"):
         check_resumable(saved, cfg, 13418, 9000)

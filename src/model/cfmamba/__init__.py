@@ -26,7 +26,7 @@ in place:
 |                    | budget: 0.91M par, 80.82M FLOP | test_budget.py          |
 
 Every value the papers do not state is a named constructor argument with its
-justification beside it. Nothing here is a silent choice.
+justification beside it.
 
 **The scan is Mamba-3.** All three papers call `mamba_ssm.Mamba`, the Mamba-1
 selective scan. `mamba_layer.py` swaps the recurrence for Mamba-3 (Lahoti et al.,

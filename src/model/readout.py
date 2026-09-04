@@ -1,21 +1,17 @@
 """Comparing heart-rate readouts on one set of predicted waveforms.
 
-Three readouts exist in this project and they disagree. `postprocess.heart_rate`
-is the vendored toolbox's bare argmax over a rectangular periodogram, and it is
-what every number in README.md comes through. `postprocess.spectral_hr` is the
-same measurement with the steps production PPG systems add: a window function,
-heavier zero-padding, and interpolation of the peak between bins. The interval
-readout counts beats and takes the median gap, which is what pulse oximeters and
-wrist wearables actually display.
+Three readouts exist in this project. `postprocess.heart_rate` is the vendored
+toolbox's argmax over a rectangular periodogram. `postprocess.spectral_hr` is the
+same measurement plus a window function, heavier zero-padding, and interpolation of
+the peak between bins. `postprocess.interval_hr` counts beats and takes the median
+gap, which is what pulse oximeters and wrist wearables display, and is the readout
+this project reports.
 
-On three clips inspected by hand they disagreed by up to 15 bpm, in both
-directions, and the one clip with contact PPG was not won by any of them. Three
-clips cannot settle it, so this scores every variant over a labelled split at
-once, from a single forward pass.
+On three clips inspected by hand they disagreed by up to 15 bpm in both directions.
+This scores every variant over a labelled split from a single forward pass.
 
-The forward pass is deliberately separate from the scoring: the model runs once
-and its output is cached, so a variant can be added and the sweep re-run without
-a card.
+The forward pass is separate from the scoring: the model runs once and its output is
+cached, so a variant can be added and the sweep re-run without a GPU.
 """
 
 from __future__ import annotations
@@ -28,8 +24,8 @@ import polars as pl
 
 from .postprocess import bandpass, heart_rate, interval_hr, spectral_hr
 
-# Each variant reads one band-passed window and returns bpm, or NaN. The control
-# is first: a change is only worth making if it beats what is already reported.
+# Each variant reads one band-passed window and returns bpm, or NaN. The vendored
+# toolbox readout is first, as the control the others are compared against.
 VARIANTS: dict[str, Callable[[np.ndarray, float], float]] = {
     "toolbox": lambda w, fps: heart_rate(w, fps, filtered=True),
     "boxcar_p1": lambda w, fps: spectral_hr(
@@ -71,13 +67,13 @@ def score(
 ) -> pl.DataFrame:
     """MAE, RMSE and rho per variant per source, plus the aggregate.
 
-    The truth rate is read with the **same** variant as the prediction. Reading it
-    with one readout and the prediction with another would measure the difference
-    between the two methods and report it as model error.
+    The truth rate is read with the same variant as the prediction. Reading it with
+    one readout and the prediction with another would measure the difference between
+    the two methods and report it as model error.
 
     Windows whose rate could not be read are dropped and counted, for the reason
-    `evaluate.summarise` gives: a moving denominator lets a variant that gives up
-    on the hard windows report the easy ones' score.
+    `evaluate.summarise` gives: a moving denominator lets a variant that fails on the
+    harder windows report the score of the rest.
     """
     if predicted.shape != truth.shape:
         raise ValueError(

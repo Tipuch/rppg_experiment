@@ -1,23 +1,21 @@
 """Training loop for CFMamba-Phys.
 
-Waveform supervision only: one target per frame, taken from the contact PPG, and
-heart rate read off the prediction afterwards rather than learned. The scalar
-regression this file used to run is gone -- a clip-level label departs from the
-true rate of any given 5.33 s window by 4.02 bpm on this corpus, so it was the
-wrong target before it was a hard optimisation.
+Waveform supervision: one target per frame, taken from the contact PPG. Heart rate
+is read off the prediction afterwards rather than learned. A clip-level label
+departs from the true rate of a given 5.33 s window by 4.02 bpm on this corpus.
 
-**No validation split, and no checkpoint selection.** Neither source paper has one
--- "due to the absence of the validation set, we selected the checkpoint from the
-last epoch" (RhythmMamba 4.3) -- and inventing one over twelve test subjects would
-make every number incomparable while inviting selection on the thing being
-measured. Test is scored each epoch so the trajectory is visible, and the weights
-kept are always the last epoch's. That means the epoch budget has to be decided in
-advance and not tuned afterwards.
+**The reported result is the last epoch.** Both source papers report that --
+"due to the absence of the validation set, we selected the checkpoint from the
+last epoch" (RhythmMamba 4.3) -- so the epoch budget is fixed in advance rather
+than tuned on the result.
 
-**POS and CHROM are scored on the same windows before training starts.** They need
-no training and publish ~4.06-4.08 bpm MAE on UBFC-rPPG. A run that ends above
-them has not learned anything a decade-old algorithm does not already do, and
-the baseline is therefore printed before the first epoch.
+A dev split is scored each epoch, subsampled to `dev_eval_segments`, for the
+trajectory. `<out>/best.pt` is written whenever an epoch sets a new lowest dev
+score, because `last.pt` is overwritten every epoch and cannot be rolled back. It
+is a second artefact; the reported number stays the last epoch's.
+
+POS and CHROM are available as a floor through `src.cli baseline`, which scores
+them on the same windows. They publish ~4.06-4.08 bpm MAE on UBFC-rPPG.
 """
 
 from __future__ import annotations
@@ -32,8 +30,8 @@ import polars as pl
 import torch
 from torch.utils.data import DataLoader
 
+from ..aggregation.splits import DEFAULT_SEED, RATIOS
 from ..paths import BUILD_ROOT
-from .baselines import run as run_baselines
 from .cfmamba import CFMambaPhys
 from .dataset import (
     DEFAULT_CLIP_FRAMES,
@@ -45,9 +43,6 @@ from .dataset import (
     prepare_splits,
 )
 from .evaluate import evaluate, format_metrics, per_source, per_subject, summarise
-
-# CLBP-300's five clips ship as plain .mov files with the labels encoded in the
-# filename and no waveform at all, so they cannot support per-frame supervision.
 from .losses import DEFAULT_ALPHA, DEFAULT_BETA, composite_loss
 
 
@@ -71,9 +66,8 @@ class TrainConfig:
     min_lr_frac: float = 0.01
     grad_clip: float = 1.0
     batch_size: int = 4
-    accum_steps: int = 1
     workers: int = 8
-    seed: int = 20260822
+    seed: int = DEFAULT_SEED
     n_frames: int = DEFAULT_CLIP_FRAMES
     resolution: int = MODEL_RES
 
@@ -95,15 +89,14 @@ class TrainConfig:
     ffn: str = "df"
     pts_mode: str = "channel"
     direction: str = "none"
-    cam_pooling: str = "cmamba"
     ffn_activation: str | None = "gelu"
 
-    # "paper" is both source papers' UBFC split, for comparability. "random" is a
-    # subject-grouped 85/10/5 over every segment in the manifest, which is what to
-    # use when the manifest is more than UBFC.
-    # Matches the CLI. The pooled manifest carries its own split, and
-    # re-deriving one here would silently train on a different partition.
-    protocol: str = "manifest"
+    # How the split is obtained. "auto" reads the manifest's own `split` column
+    # when it has one and derives a subject-grouped split when it does not, and
+    # says which it used. "manifest" and "random" force one or the other; a
+    # forced "manifest" against a manifest with no column raises rather than
+    # silently training on a different partition.
+    protocol: str = "auto"
     # Cap the per-epoch dev pass. Dev is 11,984 segments on the full corpus, so
     # scoring all of it every epoch costs as much as the training does -- and the
     # trajectory does not need that precision, it needs to be visible. The full dev
@@ -112,7 +105,6 @@ class TrainConfig:
     frame_norm: str = "standardized"
     sources: tuple[str, ...] = ()          # empty means every source with a waveform
     stride_frames: int | None = None        # None means non-overlapping segments
-    baselines: bool = True
     log_every: int = 25
     # Synchronise inside the training loop so compute_s is compute rather than
     # queue-submission time. Off by default: it serialises the pipeline, so it
@@ -123,22 +115,19 @@ class TrainConfig:
     resume: bool = False
     # Metric on the per-epoch dev pass that <out>/best.pt tracks; see best_index.
     # Lower is better, so BEST_METRICS only. The dev pass is a subsample
-    # (dev_eval_segments), which makes this a noisy criterion -- best.pt is a second
-    # artefact, and the reported test number stays the last epoch's.
+    # (dev_eval_segments), which makes this a noisy criterion.
     best_metric: str = "loss"
     out_dir: Path = field(default_factory=lambda: BUILD_ROOT / "runs" / "cfmamba")
 
 
 # Evaluation loaders get a fraction of the worker budget, and never persist.
 #
-# This is not a tuning preference, it is a correctness fix. A run builds four
-# loaders -- train, dev, test, and the limited per-epoch watch split -- and giving
-# every one of them `num_workers=12, persistent_workers=True` leaves **48 worker
-# processes** alive simultaneously, each holding an ffmpeg child, decode buffers and
-# pinned host memory. Measured on a 16-thread machine: load average 23.5, GPU
-# utilisation 1-7%, 95% of VRAM consumed, and batch 10 running *slower* (2.2 clip/s)
-# than batch 12 (2.8 clip/s) because the contention outweighed the larger batch.
-# Only the training loader needs to stay warm.
+# A run builds four loaders -- train, dev, test, and the per-epoch watch split. At
+# `num_workers=12, persistent_workers=True` on each, 48 worker processes stay alive
+# at once, each holding an ffmpeg child, decode buffers and pinned host memory.
+# Measured on a 16-thread machine: load average 23.5, GPU utilisation 1-7%, 95% of
+# VRAM consumed, and batch 10 running slower (2.2 clip/s) than batch 12 (2.8 clip/s)
+# under the contention. Only the training loader stays warm.
 EVAL_WORKER_SHARE = 3
 
 
@@ -163,11 +152,9 @@ def _loader(segments: pl.DataFrame, cfg: TrainConfig, train: bool) -> DataLoader
         persistent_workers=bool(workers) and train,
         pin_memory=train,
         # Uniform training batches. A short final batch is a second tensor shape,
-        # which means a second set of cuFFT plans and a second workspace on a card
-        # that has already run out once -- cuFFT reports that as
-        # CUFFT_INTERNAL_ERROR rather than as an allocation failure, so the cause is not
-        # apparent from the message. Evaluation keeps every window, so it does not
-        # drop.
+        # so a second set of cuFFT plans and a second workspace. cuFFT reports the
+        # resulting allocation failure as CUFFT_INTERNAL_ERROR, which does not name
+        # the cause. Evaluation keeps every window, so it does not drop.
         drop_last=train,
     )
 
@@ -177,7 +164,7 @@ def build_model(cfg: TrainConfig) -> CFMambaPhys:
         n_frames=cfg.n_frames, fps=TARGET_FPS, stem_variant=cfg.stem_variant,
         fuse_stem=cfg.fuse_stem, use_pga=cfg.use_pga, use_cam=cfg.use_cam,
         ffn=cfg.ffn, pts_mode=cfg.pts_mode, direction=cfg.direction,
-        cam_pooling=cfg.cam_pooling, ffn_activation=cfg.ffn_activation,
+        ffn_activation=cfg.ffn_activation,
     )
 
 
@@ -186,11 +173,10 @@ def _optimiser(
 ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]:
     """AdamW with two parameter groups, then linear warmup into cosine decay.
 
-    **Two groups, because weight decay does not belong on everything.** Decaying a
-    LayerNorm gain pulls it toward zero, which is a rescaling of the layer rather
-    than a regularisation; decaying a bias just shifts it. The convention is to
-    exempt every 1-D parameter, and it matters more than usual here for two
-    specific tensors:
+    Two groups, because weight decay does not apply to every parameter. Decaying a
+    LayerNorm gain pulls it toward zero, which rescales the layer rather than
+    regularising it; decaying a bias shifts it. The convention is to exempt every
+    1-D parameter, and two tensors here need it specifically:
 
       `theta_fc`, `theta_bw`   the Gaussian band's centre and width (Eq. 14). They
                                are 0-dim, and decay would drag them toward zero --
@@ -203,13 +189,11 @@ def _optimiser(
                                are 3-D, so a dimension rule alone would miss them.
                                The flag is respected directly.
 
-    **Warmup then cosine.** No paper in the lineage states a schedule. Cosine decay
+    Warmup then cosine. No paper in the lineage states a schedule. Cosine decay
     after a short linear warmup is the AdamW convention for vision models of this
-    class, and is what this project's previous MambaVision-based configuration used
-    minus the warmup. The warmup is the addition: at batch 4 the first steps carry
-    both the largest gradients the model will ever see and the noisiest estimate of
-    them, and a cosine schedule alone uses its highest learning rate exactly
-    there.
+    class. At batch 4 the first steps carry both the largest gradients of the run
+    and the noisiest estimate of them, and a cosine schedule alone applies its
+    highest learning rate there.
     """
     decay, no_decay = [], []
     for _, module in model.named_modules():
@@ -231,7 +215,7 @@ def _optimiser(
         lr=cfg.lr, betas=cfg.betas, eps=cfg.eps,
     )
 
-    total = max(1, steps_per_epoch * cfg.epochs // max(cfg.accum_steps, 1))
+    total = max(1, steps_per_epoch * cfg.epochs)
     warmup = max(1, int(total * cfg.warmup_frac))
     floor = cfg.min_lr_frac
 
@@ -251,11 +235,11 @@ def _optimiser(
 
 
 # Fields the learning-rate schedule is a function of. `_optimiser` builds a cosine
-# of length `steps_per_epoch * epochs // accum_steps`, and `steps_per_epoch` follows
-# from the manifest, the batch size and the window length. A checkpoint stores the
+# of length `steps_per_epoch * epochs`, and `steps_per_epoch` follows from the
+# manifest, the batch size and the window length. A checkpoint stores the
 # scheduler's step counter, so resuming with any of these changed would apply that
 # counter to a differently-shaped schedule.
-SCHEDULE_FIELDS = ("epochs", "batch_size", "n_frames", "accum_steps")
+SCHEDULE_FIELDS = ("epochs", "batch_size", "n_frames")
 
 
 def save_checkpoint(
@@ -265,8 +249,8 @@ def save_checkpoint(
     """Everything needed to continue this run, not only to reuse its weights.
 
     Weights alone give a warm restart: AdamW's moments are rebuilt from scratch and
-    the scheduler restarts its warmup, jumping the learning rate back to peak. For a
-    30-epoch run that is a different experiment from the one that was interrupted.
+    the scheduler restarts its warmup, returning the learning rate to peak. For a
+    30-epoch run that is a different experiment from the interrupted one.
 
     `epoch` is the **next** epoch to run, so a resume needs no arithmetic.
     """
@@ -276,7 +260,6 @@ def save_checkpoint(
         "optimiser": optimiser.state_dict(),
         "scheduler": scheduler.state_dict(),
         "epoch": epoch,
-        "epochs": epoch,          # kept for readers of the old two-key format
         "history": history,
         "config": config,
         "steps_per_epoch": steps_per_epoch,
@@ -284,9 +267,18 @@ def save_checkpoint(
     }, path)
 
 
+# Where `build_splits` takes the split from. "auto" reads the manifest's column
+# when it has one and derives a subject-grouped split when it does not.
+PROTOCOLS = ("auto", "manifest", "random")
+
+
+def _ratio_text(ratios: dict[str, float]) -> str:
+    return "/".join(f"{100 * ratios[n]:.0f}" for n in ("train", "dev", "test"))
+
+
 # Metrics best.pt can select on. All lower-is-better; a higher-is-better metric
-# (corr, macc, snr) would select the *worst* epoch under this comparison, so it is
-# refused rather than silently minimised.
+# (corr, macc, snr) would select the worst epoch under this comparison, so it is
+# refused rather than minimised.
 BEST_METRICS = ("loss", "mae", "rmse")
 
 
@@ -300,7 +292,7 @@ def best_index(
     during the run: each epoch asks whether it is the best dev score so far.
 
     Ties keep the earlier epoch. Only a strict improvement rewrites best.pt, so a
-    plateau does not rewrite 11 MB for weights that score the same.
+    plateau does not rewrite 11 MB for the same score.
     """
     if metric not in BEST_METRICS:
         raise ValueError(
@@ -310,9 +302,9 @@ def best_index(
     best, at = float("inf"), None
     for i, record in enumerate(history):
         value = (record.get(split) or {}).get(metric)
-        # An absent or NaN metric is a measurement that did not happen, not a good
-        # one -- an epoch from before the dev pass existed, or one whose readout
-        # produced nothing.
+        # An absent or NaN metric is a measurement that did not happen rather than
+        # a good one: an epoch predating the dev pass, or one whose readout produced
+        # nothing.
         if value is None or not math.isfinite(value):
             continue
         if value < best:
@@ -334,10 +326,9 @@ def check_resumable(
 ) -> None:
     """Reject a resume whose schedule is not the one that was saved.
 
-    Silent mismatch is the failure worth preventing: the run would restore a step
-    counter into a cosine of a different length and carry on, producing a learning
-    rate curve that matches neither the interrupted run nor a fresh one, with
-    nothing in the log to say so.
+    Without this the run restores a step counter into a cosine of a different
+    length and continues, producing a learning-rate curve matching neither the
+    interrupted run nor a fresh one, with nothing in the log to say so.
     """
     for name in SCHEDULE_FIELDS:
         was, now = saved_config.get(name), getattr(cfg, name)
@@ -361,15 +352,13 @@ def write_progress(
 ) -> None:
     """Write `history.json` for the epochs finished so far.
 
-    Called after **every** epoch, not just the last. Both artefacts used to be
-    written only once the final epoch returned, so an interrupted run left an empty
-    output directory however far it had got -- twice on this project a run was
-    terminated after 2.6 hours and its completed epochs existed only in a terminal
-    log. An epoch here costs over an hour; a JSON dump costs nothing.
+    Called after each epoch rather than at the end of the run. An epoch here costs
+    over an hour, so an interrupted run that wrote nothing would leave its completed
+    epochs only in a terminal log.
 
     `complete` distinguishes two finished epochs of six from a finished two-epoch
     run, which the history alone cannot express. The caller's `result` is not
-    altered, so the final write can still build on it.
+    altered, so the final write builds on it.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -380,20 +369,19 @@ def write_progress(
 def check_targets_are_supervised(
     dataset, sample: int = 64, tolerance: float = 0.2
 ) -> None:
-    """Fail noisily if the contact PPG is not reaching the loss.
+    """Raise if the contact PPG is not reaching the loss.
 
-    A missing waveform does not raise anywhere: `load_ppg` returns None,
-    `_waveform` returns zeros, and every tensor downstream keeps its shape. The
-    run then trains against a flat target -- `neg_pearson` fixes at exactly 1.0 and
-    the frequency term reduces onto the one constant label that argmax of a zero
-    PSD produces, which reads in the log as fast progress rather than as failure.
+    A missing waveform raises nowhere: `load_ppg` returns None, `_waveform` returns
+    zeros, and every tensor downstream keeps its dimensions. The run then trains
+    against a flat target, where `neg_pearson` sits at exactly 1.0 and the frequency
+    term reduces onto the constant label that argmax of a zero PSD produces. In the
+    log that reads as fast progress.
 
-    That is not theoretical. Repointing `video_path` to the remuxed containers
-    severed MCD's labels from its clips, because the PPG is located relative to the
-    video, and a 1.3-hour epoch trained on zeros before the dropped-window count
-    gave it away.
+    Repointing `video_path` to the remuxed containers severed MCD's labels from its
+    clips, because the PPG is located relative to the video, and a 1.3-hour epoch
+    trained on zeros before the dropped-window count showed it.
 
-    Only the PPG is modified, never the video, so this costs a few hundred
+    Only the PPG is read, never the video, so this costs a few hundred
     interpolations and runs before the first batch is decoded.
     """
     import numpy as np
@@ -423,10 +411,12 @@ def check_targets_are_supervised(
 def build_splits(cfg: TrainConfig, manifest_path: Path) -> dict[str, pl.DataFrame]:
     """Segments per split, already expanded and filtered to what can be supervised.
 
-    Every split is a segment table, not a clip table. The 85/10/5 target is in
-    segments because that is what the model sees, and clip length varies four-fold
-    across this corpus -- splitting clips and expanding afterwards gives the right
-    number of recordings per side and the wrong number of examples.
+    Each split is a segment table, not a clip table. The ratios are in segments
+    because that is what the model sees, and clip length varies four-fold across
+    this corpus: splitting clips and expanding afterwards gives the right number of
+    recordings per side and the wrong number of examples.
+
+    `cfg.protocol` selects where the split comes from -- see TrainConfig.
     """
     manifest = load_manifest(manifest_path)
     usable = tuple(manifest["source"].unique().to_list())
@@ -441,43 +431,48 @@ def build_splits(cfg: TrainConfig, manifest_path: Path) -> dict[str, pl.DataFram
     if manifest.height == 0:
         raise ValueError(f"no clips left after filtering to sources {keep}")
 
-    if cfg.protocol == "manifest":
-        # The split the manifest already carries, rather than one derived here.
-        # `src.cli mrnirp` balances MR-NIRP in segments, stratifies it by corpus
-        # and persists the result, precisely so the assignment cannot move when
-        # the manifest grows -- re-deriving it here would discard all of that and
-        # silently train on a different partition.
-        if "split" not in manifest.columns:
-            raise ValueError(
-                f"--protocol manifest needs a `split` column; {manifest_path} has "
-                f"none. Build one with `src.cli mrnirp`, or use --protocol random."
-            )
-        missing = [n for n in ("train", "dev", "test")
-                   if manifest.filter(pl.col("split") == n).height == 0]
-        if missing:
-            raise ValueError(f"manifest split is missing {', '.join(missing)}")
-        # Expanded after partitioning, as with `paper`: the persisted split was
-        # already balanced in segments, so re-balancing would undo it.
-        return {
-            name: expand_to_segments(
-                manifest.filter(pl.col("split") == name),
-                cfg.n_frames, TARGET_FPS, cfg.stride_frames,
-            )
-            for name in ("train", "dev", "test")
-        }
-    if cfg.protocol != "random":
+    if cfg.protocol not in PROTOCOLS:
         raise ValueError(
-            f"unknown protocol {cfg.protocol!r}, expected manifest or random"
+            f"unknown protocol {cfg.protocol!r}, expected one of {PROTOCOLS}"
         )
-    return prepare_splits(
-        manifest, n_frames=cfg.n_frames, fps=TARGET_FPS, seed=cfg.seed,
-        stride_frames=cfg.stride_frames,
-    )
+    has_column = "split" in manifest.columns
+    if cfg.protocol == "manifest" and not has_column:
+        raise ValueError(
+            f"protocol 'manifest' needs a `split` column; {manifest_path} has none. "
+            f"Build one with `src.cli combine`, or use protocol 'random'."
+        )
+
+    if cfg.protocol == "random" or (cfg.protocol == "auto" and not has_column):
+        why = "" if has_column else f"; {manifest_path} carries no split column"
+        print(f"  split derived here, subject-grouped {_ratio_text(RATIOS)}{why}")
+        return prepare_splits(
+            manifest, n_frames=cfg.n_frames, fps=TARGET_FPS, seed=cfg.seed,
+            stride_frames=cfg.stride_frames,
+        )
+
+    # The split the manifest carries, rather than one derived here. `src.cli
+    # combine` balances it in segments and stratifies it by source, then persists
+    # the result so the assignment cannot move when the manifest grows.
+    # Re-deriving it here would discard that and train on a different partition.
+    missing = [n for n in ("train", "dev", "test")
+               if manifest.filter(pl.col("split") == n).height == 0]
+    if missing:
+        raise ValueError(f"manifest split is missing {', '.join(missing)}")
+    print(f"  split read from {manifest_path}")
+    # Expanded after partitioning: the persisted split was already balanced in
+    # segments, so re-balancing would undo it.
+    return {
+        name: expand_to_segments(
+            manifest.filter(pl.col("split") == name),
+            cfg.n_frames, TARGET_FPS, cfg.stride_frames,
+        )
+        for name in ("train", "dev", "test")
+    }
 
 
 def train(
     cfg: TrainConfig,
-    manifest_path: Path = BUILD_ROOT / "clips_ubfc.parquet",
+    manifest_path: Path = BUILD_ROOT / "clips_all.parquet",
     splits: dict[str, pl.DataFrame] | None = None,
 ) -> dict:
     if not torch.cuda.is_available():
@@ -505,9 +500,9 @@ def train(
 
     loaders = {name: _loader(part, cfg, train=(name == "train"))
                for name, part in splits.items() if part.height}
-    # A cheap, fixed subsample of dev for the per-epoch curve. Deterministic, so
-    # the trajectory is comparable across runs rather than a different sample each
-    # time; subject coverage follows from sampling segments evenly.
+    # A fixed subsample of dev for the per-epoch curve. Deterministic, so the
+    # trajectory is comparable across runs rather than a different sample each time;
+    # subject coverage follows from sampling segments evenly.
     watch_split = "dev" if "dev" in splits and splits["dev"].height else "test"
     watching = splits[watch_split]
     if cfg.dev_eval_segments and watching.height > cfg.dev_eval_segments:
@@ -525,7 +520,7 @@ def train(
               f"{part['subject_id'].n_unique():4} subjects  "
               f"{sorted(part['source'].unique().to_list())}")
 
-    # Before anything expensive: confirm the labels actually reach the loss.
+    # Before anything expensive: confirm the labels reach the loss.
     check_targets_are_supervised(loaders["train"].dataset)
 
     model = build_model(cfg).to(device)
@@ -533,15 +528,6 @@ def train(
 
     result: dict = {"config": {k: str(v) if isinstance(v, Path) else v
                                for k, v in asdict(cfg).items()}}
-
-    if cfg.baselines:
-        print("\n--- classical baselines on the test windows (no training) ---")
-        rows = run_baselines(loaders["test"], fps=TARGET_FPS)
-        result["baselines"] = {}
-        for name, method_rows in rows.items():
-            metrics = summarise(method_rows)
-            result["baselines"][name] = metrics
-            print(format_metrics(name.upper(), metrics))
 
     total_steps = len(loaders["train"])
     optimiser, scheduler = _optimiser(model, cfg, total_steps)
@@ -578,8 +564,8 @@ def train(
         print(f"\nresumed from {checkpoint}: starting epoch {start_epoch} of "
               f"{cfg.epochs}, scheduler at step {scheduler.last_epoch}")
         # The inherited history includes epochs whose weights are gone, and best.pt
-        # is compared against all of them. Say so: if nothing from here beats the
-        # score below, no best.pt is written at all.
+        # is compared against all of them. If nothing from here beats the score
+        # below, no best.pt is written.
         at = best_index(history, watch_split, cfg.best_metric)
         if at is not None:
             score = history[at][watch_split][cfg.best_metric]
@@ -603,9 +589,9 @@ def train(
         optimiser.zero_grad(set_to_none=True)
         window = {"loss": torch.zeros((), device=device), "n": 0}
         window_started = time.time()
-        # Data-wait against compute. Without this the epoch time states the run is
-        # slow but not which half is slow, which is the question that determines
-        # whether to touch the loader or the model.
+        # Data-wait against compute. Epoch time alone says the run is slow without
+        # saying which side is slow, which is what decides whether to change the
+        # loader or the model.
         fetch_s = compute_s = 0.0
         waiting = time.perf_counter()
 
@@ -623,16 +609,15 @@ def train(
             loss, parts = composite_loss(
                 predicted, target, fps=TARGET_FPS, alpha=cfg.alpha, beta=cfg.beta
             )
-            (loss / cfg.accum_steps).backward()
-            if (step + 1) % cfg.accum_steps == 0:
-                if cfg.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-                optimiser.step()
-                optimiser.zero_grad(set_to_none=True)
-                # Per step, not per epoch: an epoch here is 100-25000 steps
-                # depending on the corpus, so an epoch-level schedule would mean a
-                # completely different curve for each.
-                scheduler.step()
+            loss.backward()
+            if cfg.grad_clip:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+            optimiser.step()
+            optimiser.zero_grad(set_to_none=True)
+            # Per step, not per epoch: an epoch here is 100-25000 steps depending
+            # on the corpus, so an epoch-level schedule would be a different curve
+            # for each.
+            scheduler.step()
             for key in sums:
                 sums[key] += parts[key]
             window["loss"] += parts["loss"]
@@ -651,13 +636,6 @@ def train(
                 window = {"loss": torch.zeros((), device=device), "n": 0}
                 window_started = time.time()
             waiting = time.perf_counter()
-
-        if total_steps % cfg.accum_steps:
-            if cfg.grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            optimiser.step()
-            optimiser.zero_grad(set_to_none=True)
-            scheduler.step()
 
         # Dev each epoch, test only at the end. Dev exists to make the trajectory
         # visible without touching the number that gets reported.
@@ -706,25 +684,19 @@ def train(
               f"{'  *best' if is_best else ''}",
               flush=True)
 
-    torch.save({"model": model.state_dict(), "epochs": cfg.epochs,
+    torch.save({"model": model.state_dict(), "epoch": cfg.epochs,
                 "config": result["config"]}, cfg.out_dir / "final.pt")
 
     print("\n--- final, last epoch ---")
-    for name in ("dev", "test"):
-        if name in loaders and name != "test":
-            full = summarise(evaluate(model, loaders[name], device, TARGET_FPS,
-                                      alpha=cfg.alpha, beta=cfg.beta))
-            print(format_metrics(f"{name} (full)", full))
-            result[f"{name}_full"] = full
+    if "dev" in loaders:
+        full = summarise(evaluate(model, loaders["dev"], device, TARGET_FPS,
+                                  alpha=cfg.alpha, beta=cfg.beta))
+        print(format_metrics("dev (full)", full))
+        result["dev_full"] = full
     rows = evaluate(model, loaders["test"], device, TARGET_FPS,
                     alpha=cfg.alpha, beta=cfg.beta)
     final = summarise(rows)
     print(format_metrics("test", final))
-    if cfg.baselines:
-        for name, metrics in result.get("baselines", {}).items():
-            verdict = "BEATEN" if final.get("mae", 1e9) < metrics.get("mae", 1e9) else "NOT beaten"
-            print(f"  vs {name.upper():6} {metrics.get('mae', float('nan')):6.2f} bpm"
-                  f"  -> {verdict}")
     print("\nby source:")
     for name, metrics in per_source(rows):
         print(f"  {format_metrics(name, metrics)}")

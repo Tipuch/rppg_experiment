@@ -1,16 +1,11 @@
-"""Classical rPPG estimators, as the floor a learned model has to clear.
+"""Classical rPPG estimators: the floor a learned model is read against.
 
 POS (Wang et al., 2017) and CHROM (de Haan and Jeanne, 2013) need no training and
-publish 4.08 and 4.06 bpm MAE on UBFC-rPPG in both source papers' tables. They are
-the right baseline for a waveform model: a network that cannot beat a projection
-onto a fixed chrominance direction has not learned anything a decade-old algorithm
-does not already do.
-
-This replaces the predict-the-training-mean baseline the project used before, which
-is meaningful for a scalar regression and meaningless for a waveform.
+publish 4.08 and 4.06 bpm MAE on UBFC-rPPG in both source papers' tables. Each
+projects the per-frame mean RGB onto a fixed chrominance direction.
 
 Both are taken from the vendored rPPG-Toolbox rather than reimplemented, so the
-numbers are comparable with the tables they appear in.
+numbers stay comparable with the tables they appear in.
 """
 
 from __future__ import annotations
@@ -29,22 +24,20 @@ _TOOLBOX = Path(__file__).resolve().parents[2] / "tools" / "rPPG-Toolbox"
 def _load(module_name: str, relative: str):
     """Load one vendored estimator by file path, with a minimal `utils` shim.
 
-    Neither estimator can be loaded from a plain path the way post_process can,
-    because both do `import unsupervised_methods.utils`. That module's top-level
-    imports pull in scikit-image and scikit-learn, and **neither is used on this
-    code path** -- POS calls only `utils.detrend`, CHROM calls nothing. Rather than
-    take on two large dependencies to satisfy dead imports, a substitute package
-    exposing `detrend` and `process_video` is registered first.
+    Neither estimator loads from a plain path the way post_process does, because
+    both do `import unsupervised_methods.utils`. That module's top-level imports
+    pull in scikit-image and scikit-learn, and neither is used on this code path:
+    POS calls `utils.detrend`, CHROM calls nothing. A substitute package exposing
+    `detrend` and `process_video` is registered first, rather than taking on two
+    large dependencies to satisfy unused imports.
 
-    `detrend` is not a reimplementation: it is the same routine, already loaded
-    from the toolbox's own post_process module, so the algorithms still run on
-    toolbox code and the numbers stay comparable with the tables they appear in.
+    `detrend` is the toolbox's own routine, already loaded from its post_process
+    module, so both algorithms run on toolbox code.
     """
-    # POS calls `np.mat`, an alias NumPy removed in 2.0. `np.asmatrix` is the
-    # migration NumPy's own error message prescribes, so restoring the alias to it
-    # is exact rather than approximate -- and it keeps the estimator running on
-    # upstream code instead of a local fork of a published algorithm. Only an
-    # attribute that used to exist is added; nothing here uses `np.mat` otherwise.
+    # POS calls `np.mat`, an alias NumPy removed in 2.0. NumPy's own error message
+    # names `np.asmatrix` as the replacement, so restoring the alias to it keeps the
+    # estimator on upstream code rather than a local fork. Nothing else here uses
+    # `np.mat`.
     if not hasattr(np, "mat"):
         np.mat = np.asmatrix
 
@@ -87,10 +80,10 @@ def _load(module_name: str, relative: str):
 def skin_rgb_trace(frames: torch.Tensor, skin: torch.Tensor | None = None) -> np.ndarray:
     """(T, 3, H, W) -> (T, 1, 1, 3): the per-frame mean RGB over skin pixels.
 
-    Both estimators use nothing but each frame's spatial mean, so reducing to a
-    1x1 "video" first is exactly equivalent and orders of magnitude faster. It also
-    lets the mean be taken over skin pixels only -- averaging in the background
-    would dilute a signal that is already a fraction of a percent.
+    Both estimators read nothing but each frame's spatial mean, so reducing to a
+    1x1 "video" first is equivalent and orders of magnitude faster. It also lets the
+    mean be taken over skin pixels only; averaging in the background dilutes a
+    signal that is already a fraction of a percent.
     """
     array = frames.detach().float().cpu().numpy()
     if skin is not None:
@@ -107,14 +100,14 @@ def skin_rgb_trace(frames: torch.Tensor, skin: torch.Tensor | None = None) -> np
 
 def pos(frames: torch.Tensor, skin: torch.Tensor | None = None,
         fps: float = 30.0) -> np.ndarray:
-    """Plane-independent-to-skin. Returns an raw pulse estimate."""
+    """Plane-orthogonal-to-skin. Returns a raw pulse estimate."""
     module = _load("unsupervised_methods.methods.POS_WANG", "POS_WANG.py")
     return np.asarray(module.POS_WANG(skin_rgb_trace(frames, skin), fps)).ravel()
 
 
 def chrom(frames: torch.Tensor, skin: torch.Tensor | None = None,
           fps: float = 30.0) -> np.ndarray:
-    """Chrominance-based estimate. Returns an raw pulse estimate."""
+    """Chrominance-based estimate. Returns a raw pulse estimate."""
     module = _load("unsupervised_methods.methods.CHROME_DEHAAN", "CHROME_DEHAAN.py")
     return np.asarray(module.CHROME_DEHAAN(skin_rgb_trace(frames, skin), fps)).ravel()
 
@@ -126,9 +119,8 @@ def run(loader, methods: tuple[str, ...] = ("pos", "chrom"),
         fps: float = 30.0) -> dict[str, list[dict]]:
     """Per-window rows for each classical method, shaped like evaluate.evaluate.
 
-    Scored on exactly the same windows the model is scored on. A baseline computed
-    over a different split, or over the clips that happened to decode, is not a
-    baseline.
+    Scored on the same windows the model is scored on. A baseline computed over a
+    different split, or over whichever clips decoded, measures something else.
     """
     from .postprocess import compare
 
@@ -142,7 +134,7 @@ def run(loader, methods: tuple[str, ...] = ("pos", "chrom"),
                     estimate = METHODS[name](batch["frames"][i], batch["skin"][i], fps)
                 except Exception as error:                  # noqa: BLE001
                     # A classical estimator failing on a degenerate window is
-                    # information, not a reason to abandon the whole comparison.
+                    # recorded rather than ending the comparison.
                     rows[name].append({
                         "clip_id": batch["clip_id"][i],
                         "subject_id": batch["subject_id"][i],
@@ -154,7 +146,7 @@ def run(loader, methods: tuple[str, ...] = ("pos", "chrom"),
                     continue
                 if len(estimate) != len(truth):
                     # POS and CHROM window internally and can return a shorter
-                    # signal. Compare on the overlap rather than padding without notice.
+                    # signal. Compare on the overlap rather than padding silently.
                     length = min(len(estimate), len(truth))
                     estimate, window_truth = estimate[:length], truth[:length]
                 else:

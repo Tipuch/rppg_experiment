@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from src.aggregation.splits import RATIOS_MRNIRP, assign, segment_counts
+from src.aggregation.splits import RATIOS_POOLED, assign, segment_counts
 from src.datasets import base, mrnirp
 
 
@@ -253,8 +253,8 @@ def test_no_subject_lands_on_two_sides_of_the_split():
     manifest = _manifest({f"mrnirp_car_subject{i}": [120.0, 120.0, 240.0]
                           for i in range(15)})
     tagged = assign(
-        manifest.with_columns(segment_counts(manifest).alias("n_segments")),
-        ratios=RATIOS_MRNIRP, weight="n_segments",
+        manifest.with_columns(segment_counts().alias("n_segments")),
+        ratios=RATIOS_POOLED, weight="n_segments",
     )
     per_subject = tagged.group_by("subject_id").agg(pl.col("split").n_unique())
     assert per_subject["split"].max() == 1
@@ -274,11 +274,11 @@ def test_the_split_fills_by_segment_count_not_by_recording_count():
     lengths = {f"mrnirp_car_long{i}": [600.0] for i in range(3)}
     lengths |= {f"mrnirp_car_short{i}": [60.0] for i in range(12)}
     manifest = _manifest(lengths)
-    weighted = manifest.with_columns(segment_counts(manifest).alias("n_segments"))
+    weighted = manifest.with_columns(segment_counts().alias("n_segments"))
 
     def train_subjects(**kwargs) -> float:
         return float(np.mean([
-            assign(weighted, ratios=RATIOS_MRNIRP, seed=seed, **kwargs)
+            assign(weighted, ratios=RATIOS_POOLED, seed=seed, **kwargs)
             .filter(pl.col("split") == "train")["subject_id"].n_unique()
             for seed in range(40)
         ]))
@@ -295,15 +295,15 @@ def test_a_three_percent_dev_share_is_unreachable_at_this_corpus_size():
     the one to quote.
     """
     manifest = _manifest({f"mrnirp_car_subject{i}": [120.0] for i in range(15)})
-    weighted = manifest.with_columns(segment_counts(manifest).alias("n_segments"))
+    weighted = manifest.with_columns(segment_counts().alias("n_segments"))
     total = weighted["n_segments"].sum()
     smallest_subject = weighted.group_by("subject_id").agg(
         pl.col("n_segments").sum()
     )["n_segments"].min()
 
-    assert smallest_subject / total > RATIOS_MRNIRP["dev"]
+    assert smallest_subject / total > RATIOS_POOLED["dev"]
 
-    tagged = assign(weighted, ratios=RATIOS_MRNIRP, weight="n_segments")
+    tagged = assign(weighted, ratios=RATIOS_POOLED, weight="n_segments")
     dev = tagged.filter(pl.col("split") == "dev")["n_segments"].sum()
     assert dev / total >= smallest_subject / total
 
@@ -327,7 +327,7 @@ def test_segment_counts_match_the_expansion_the_loader_performs():
         .group_by("clip_id").len().sort("clip_id")
     )
     got = (
-        manifest.with_columns(segment_counts(manifest, 160, 30.0).alias("n"))
+        manifest.with_columns(segment_counts(160, 30.0).alias("n"))
         .select("clip_id", "n").sort("clip_id")
     )
     assert expected["len"].to_list() == got["n"].to_list()
@@ -335,10 +335,10 @@ def test_segment_counts_match_the_expansion_the_loader_performs():
 
 def test_the_split_is_deterministic_across_runs():
     manifest = _manifest({f"mrnirp_car_subject{i}": [120.0] for i in range(15)})
-    weighted = manifest.with_columns(segment_counts(manifest).alias("n_segments"))
-    first = assign(weighted, ratios=RATIOS_MRNIRP, weight="n_segments", seed=7)
-    again = assign(weighted, ratios=RATIOS_MRNIRP, weight="n_segments", seed=7)
-    other = assign(weighted, ratios=RATIOS_MRNIRP, weight="n_segments", seed=8)
+    weighted = manifest.with_columns(segment_counts().alias("n_segments"))
+    first = assign(weighted, ratios=RATIOS_POOLED, weight="n_segments", seed=7)
+    again = assign(weighted, ratios=RATIOS_POOLED, weight="n_segments", seed=7)
+    other = assign(weighted, ratios=RATIOS_POOLED, weight="n_segments", seed=8)
     assert first["split"].to_list() == again["split"].to_list()
     assert first["split"].to_list() != other["split"].to_list()
 
@@ -355,11 +355,11 @@ def test_packing_largest_first_hits_a_target_smaller_than_one_subject():
     lengths = {f"mrnirp_car_big{i}": [240.0, 240.0] for i in range(6)}
     lengths |= {f"mrnirp_car_small{i}": [60.0] for i in range(9)}
     manifest = _manifest(lengths)
-    weighted = manifest.with_columns(segment_counts(manifest).alias("n_segments"))
+    weighted = manifest.with_columns(segment_counts().alias("n_segments"))
     total = weighted["n_segments"].sum()
 
     def shares(**kwargs) -> dict[str, float]:
-        tagged = assign(weighted, ratios=RATIOS_MRNIRP, weight="n_segments", **kwargs)
+        tagged = assign(weighted, ratios=RATIOS_POOLED, weight="n_segments", **kwargs)
         got = tagged.group_by("split").agg(pl.col("n_segments").sum()).to_dict(
             as_series=False
         )
@@ -367,7 +367,7 @@ def test_packing_largest_first_hits_a_target_smaller_than_one_subject():
                 zip(got["split"], got["n_segments"], strict=True)}
 
     packed, shuffled = shares(order="size"), shares()
-    error = lambda s: sum(abs(s.get(k, 0) - v) for k, v in RATIOS_MRNIRP.items())
+    error = lambda s: sum(abs(s.get(k, 0) - v) for k, v in RATIOS_POOLED.items())
 
     assert error(packed) < error(shuffled)
     assert packed["train"] > 0.85
@@ -378,8 +378,8 @@ def test_packing_still_keeps_every_subject_whole():
     lengths = {f"mrnirp_car_big{i}": [240.0, 240.0, 120.0] for i in range(5)}
     lengths |= {f"mrnirp_car_small{i}": [60.0] for i in range(10)}
     manifest = _manifest(lengths)
-    weighted = manifest.with_columns(segment_counts(manifest).alias("n_segments"))
-    tagged = assign(weighted, ratios=RATIOS_MRNIRP, weight="n_segments", order="size")
+    weighted = manifest.with_columns(segment_counts().alias("n_segments"))
+    tagged = assign(weighted, ratios=RATIOS_POOLED, weight="n_segments", order="size")
     assert tagged.group_by("subject_id").agg(pl.col("split").n_unique())["split"].max() == 1
 
 

@@ -8,14 +8,14 @@ from the predicted waveform by band-pass and beat timing, not regressed directly
 0.9327M parameters, 79.15M MACs per frame. Published figures are 0.91M and 80.82M.
 
 The scan is Mamba-3 (arXiv:2603.15569) rather than the Mamba-1 selective scan the
-source papers call; see `ARCHITECTURE.md` §4.1.
+source papers call; see `ARCHITECTURE.md` section 4.1.
 
 ## Requirements
 
 CUDA is required: Mamba-3's scan is a Triton kernel with no CPU path. All other
 modules are plain PyTorch and are tested on CPU.
 
-Two directories are not distributed with this repository:
+Three directories are not distributed with this repository:
 
 | directory | contents | source |
 |---|---|---|
@@ -23,10 +23,11 @@ Two directories are not distributed with this repository:
 | `research/` | the five source papers | published, obtain separately |
 | `tools/rPPG-Toolbox` | POS and CHROM reference implementations | github.com/ubicomplab/rPPG-Toolbox |
 
-`datasets/` is excluded because it contains human-subject facial video and health
+`datasets/` is excluded because it holds human-subject facial video and health
 biomarkers under data use agreements. `src/model/baselines.py` loads POS and CHROM
 from the vendored toolbox rather than reimplementing them, so `tools/rPPG-Toolbox`
-must be present for `baseline` and for the `--baselines` path of `train`.
+must be present for the `baseline` command. `src/model/postprocess.py` also reads
+the toolbox's SNR and MACC definitions, so `evaluate` needs it too.
 
 Both roots are relative to the working directory by default and neither is
 hardcoded anywhere else in the source. Repoint either from the environment when
@@ -64,16 +65,16 @@ video -> ffmpeg decode at 30 fps, face box cropped inside the filter graph
 uv run python -m src.cli --help
 
 uv run python -m src.cli clips     # build the clip manifest: face boxes, skin masks
-uv run python -m src.cli mrnirp    # ingest MR-NIRP from its zips -- it ships stills
+uv run python -m src.cli mrnirp    # ingest MR-NIRP from its zips; it ships stills
 uv run python -m src.cli remux     # rewrite MCD's container so seeking is O(1)
-uv run python -m src.cli combine   # pool every corpus into one manifest + split
+uv run python -m src.cli combine   # pool the corpora into one manifest + split
 uv run python -m src.cli cache     # decode each face box once to a uint8 cache
 uv run python -m src.cli samples   # render contact sheets for visual review
 uv run python -m src.cli info      # coverage, label spread, split sizes
 uv run python -m src.cli check     # shapes, parameter budget, throughput
-uv run python -m src.cli sanity    # recover a synthetic pulse
+uv run python -m src.cli sanity    # fit a synthetic pulse, as a control
 uv run python -m src.cli baseline  # POS and CHROM on the test windows
-uv run python -m src.cli train     # fit all corpora, 50 epochs, then score
+uv run python -m src.cli train     # fit the corpora, 50 epochs, then score
 uv run python -m src.cli predict   # run one video through a model, plot the pulse
 uv run python -m src.cli readout   # score every heart-rate readout on a labelled split
 uv run python tools/plot_loss.py build/runs/<name>
@@ -82,6 +83,13 @@ uv run python tools/plot_loss.py build/runs/<name>
 `clips` runs YuNet once per clip for the face box and SegFace once for a median
 skin mask. Both are too slow to run per batch, so their output is written to the
 manifest and read from there at training time.
+
+`train` takes no arguments for the standard run. Its options are the everyday
+ones -- `--epochs`, `--batch`, `--frames`, `--workers`, `--seed`, the four loss and
+schedule weights, `--sources`, `--stride`, `--resume`, `--profile`, `--manifest`
+and `--run-dir`. The paper ablations (stem variant, PGA, CAM, FFN kind, PTS mode,
+scan direction, frame normalisation, augmentation) are fields on `TrainConfig` in
+`src/model/train.py` rather than flags.
 
 `cache` decodes each clip's face box once at native resolution and native frame
 rate into a `uint8` array. `remux` rewrites MCD-rPPG's AVI container with
@@ -93,11 +101,12 @@ desynchronises the contact-PPG target from the video.
 
 `combine` pools UBFC, MR-NIRP and MCD into `build/clips_all.parquet` with one
 90/3/7 split, grouped by subject and stratified by source so each corpus reaches
-dev and test. `train` with no arguments is the run you want: **all three corpora,
-50 epochs, 300-frame windows**, `--resume` to continue an interrupted one.
+dev and test. `train` reads that column. A manifest with no `split` column gets a
+subject-grouped 85/10/5 derived at load time, and the run prints which of the two
+it used.
 
-MCD is 180 h against the other two's 2.9, so it is ~98% of the segments whatever
-the split does. Results are reported per source, and `--stride` subsamples it.
+MCD is 180 h against the other two's 2.9, so it is ~98% of the segments under any
+split. Results are reported per source, and `--stride` subsamples it.
 
 `mrnirp` is a one-off ingest for the only corpus that ships stills rather than
 video: it reads the nested zips, demosaics the Bayer frames, finds the face box
@@ -115,20 +124,19 @@ L_time = 1 - Pearson(S_pred, S_gt)
 L_freq = CE(PSD(S_pred), argmax(PSD(S_gt)))
 ```
 
-`L_freq` is a cross-entropy over 105 candidate rates at 1 bpm spacing across
-45-150 bpm, evaluated as a direct DFT at those frequencies rather than an FFT
+`L_freq` is a cross-entropy over 105 candidate rates at 1 bpm spacing, covering
+45-149 bpm, evaluated as a direct DFT at those frequencies rather than an FFT
 followed by binning. The label is the target waveform's own dominant rate, read
 from the contact PPG rather than from the manifest's heart-rate column, because
 five UBFC subjects have a broken heart-rate readout and an intact waveform.
 
-CFMamba states Eq. 19 with alpha and beta as symbols and does not give their
-values. RhythmFormer Section 3.4 supplied 0.2 and 1.0, whose frequency loss is the
-same construction, and this project ran that way until `REPORT_cfmamba.md`
-finding 2: the temporal term went flat from epoch 2, and at `alpha=0.2` it was
-~1.5% of the final loss -- so the optimiser had almost no reason to fix the
-waveform the model exists to predict. **alpha is now 0.8**, a deliberate departure
-from RhythmFormer on this project's own measurement. Loss values from runs before
-the change are on a different scale and are not comparable term by term.
+CFMamba states Eq. 19 with alpha and beta as symbols and gives no values.
+RhythmFormer Section 3.4 supplied 0.2 and 1.0 for the same construction, and this
+project ran that way until it measured the temporal term stopping at epoch 2 and
+contributing ~1.5% of the total loss at `alpha=0.2`. **alpha is 0.8**, a departure
+from RhythmFormer on that measurement; ARCHITECTURE.md section 6 records the
+numbers. Loss values from runs before the change are on a different scale and are
+not comparable term by term.
 
 ## Reading heart rate off the waveform
 
@@ -138,9 +146,9 @@ accuracy, difference them, take the median. This is what pulse oximeters and wri
 wearables display, and `src.model.postprocess.interval_hr` is the function every
 number below comes through.
 
-It replaced the dominant spectral peak, and the replacement was measured rather
-than argued. `src.cli readout` runs one forward pass over a labelled split, caches
-it, and scores every candidate readout against contact PPG. Over 1569 test windows,
+It replaced the dominant spectral peak on measurement. `src.cli readout` runs one
+forward pass over a labelled split, caches it, and scores every candidate readout
+against contact PPG. Over the 1569 test windows in `build/readout_test_s900.npz`,
 strided so the sample spans all 265 test clips:
 
 | readout | MAE | RMSE | rho |
@@ -150,63 +158,62 @@ strided so the sample spans all 265 test clips:
 | spectral peak, toolbox argmax | 3.35 | 8.18 | 0.793 |
 | spectral peak, Hann, 8x pad | 3.39 | 8.04 | 0.804 |
 
-The interval readout has the *worst* MAE and the best RMSE by 19%. It makes fewer
-large misses and slightly more small ones, and rho -- whether the readout tracks
-the rate across windows at all -- rises from 0.793 to 0.857. On the one clip
-inspected by hand with contact PPG, the error fell from -28.1 to -6.5 bpm.
+The interval readout has the highest MAE and the lowest RMSE, by 19%: fewer large
+misses, slightly more small ones. rho -- whether the readout tracks the rate across
+windows -- rises from 0.793 to 0.857. On the one clip inspected by hand with
+contact PPG, the error fell from -28.1 to -6.5 bpm.
 
-Two consequences worth stating plainly:
+Two consequences:
 
-- **The results table below is no longer comparable with the rPPG-Toolbox tables.**
+- **The results below are not comparable with the rPPG-Toolbox tables.**
   `postprocess.heart_rate` is still the toolbox's own argmax and is still tested
-  for parity, but it is no longer what `evaluate` reports.
-- Among the spectral variants the only real gain was **zero-padding**, not the
-  window function and not sub-bin interpolation: 8x padding moved MAE 3.35 -> 3.25,
-  while interpolation moved it 0.006 and a Hann window made it worse. An earlier
-  600-window sample ranked Hann best; it was drawn from ~33 consecutive clips and
-  did not survive a sample spread across all of them.
+  for parity, but it is not what `evaluate` reports.
+- Among the spectral variants the gain came from zero-padding, not from the window
+  function and not from sub-bin interpolation: 8x padding moved MAE 3.35 -> 3.25,
+  interpolation moved it 0.006, and a Hann window raised it. An earlier 600-window
+  sample ranked Hann first; it was drawn from ~33 consecutive clips and the ranking
+  did not hold on a sample spread across all of them.
 
 ### The dicrotic notch, counted as a beat
 
-Beat timing has one failure the spectral readout does not, and it is in the
-*labels* as much as in the predictions. The dicrotic notch -- the aortic valve
-closing, present in every real pulse -- is a second local maximum on the
-diastolic decay. At 66 bpm it lands about 15 frames after the systolic peak,
-past the 12-frame spacing floor `beats` applies, so `find_peaks` returns 17
-peaks for 10 cycles. More than half the intervals are then half-cycles and the
-median reads **115 bpm against a 66 bpm pulse**.
+Beat timing has one failure the spectral readout does not, and it appears in the
+labels as well as in the predictions. The dicrotic notch -- the aortic valve
+closing, present in a normal pulse -- is a second local maximum on the diastolic
+decay. At 66 bpm it lands about 15 frames after the systolic peak, past the
+12-frame spacing floor `beats` applies, so `find_peaks` returns 17 peaks for 10
+cycles. More than half the intervals are then half-cycles and the median reads
+115 bpm for a 66 bpm pulse.
 
-It is intermittent within one recording -- the notch grows and shrinks with
-perfusion -- so the same subject reads correctly in the next window. On the
-pooled test split it hits 44 of 4482 contact-PPG windows: 39 MCD, 5 MR-NIRP, 0
-UBFC. Those 5 were 12% of MR-NIRP's windows, enough to move that corpus to
-6.79 bpm MAE and rho -0.07 while the predicted waveforms matched their targets
-at MACC 0.9.
+It is intermittent within one recording, because the notch grows and shrinks with
+perfusion, so the same subject reads correctly in the next window. On the pooled
+test split it affects 44 of 4482 contact-PPG windows: 39 MCD, 5 MR-NIRP, 0 UBFC.
+Those 5 were 12% of MR-NIRP's windows, enough to move that corpus to 6.79 bpm MAE
+and rho -0.07 while the predicted waveforms matched their targets at MACC 0.9.
 
-`beats` repairs it by keeping only peaks above half the median prominence, and
-**only when beat timing claims a rate 1.4x the spectral peak or higher** -- a
-rate no pulse produces, since the spectrum of a real 115 bpm pulse peaks at 115.
-The floor is not applied unconditionally because on a noisy predicted waveform it
-discards real beats: over the 788 windows in `build/readout_test.npz` an
-unconditional floor cost 0.34 bpm MAE and 1.4 bpm RMSE. Conditional, the same
-sweep improves (MAE 3.810 -> 3.787, RMSE 6.713 -> 6.639, rho 0.858 -> 0.862),
-the guard fires on 0.56% of test windows, and label inconsistency falls from 44
-windows to 27.
+`beats` repairs it by keeping only peaks above half the median prominence, and only
+when beat timing claims a rate 1.4x the spectral peak or higher. The spectrum of a
+115 bpm pulse peaks at 115, so that ratio indicates double-counting. The floor is
+conditional because on a noisy predicted waveform an unconditional one discards
+real beats: over the 788 windows in `build/readout_test.npz` it cost 0.34 bpm MAE
+and 1.4 bpm RMSE. Conditional, the same sweep improves (MAE 3.81 -> 3.79,
+RMSE 6.71 -> 6.65, rho 0.858 -> 0.862), the guard fires on 0.56% of test windows,
+and label inconsistency falls from 44 windows to 27.
 
 ## Results
 
-MCD-rPPG plus UBFC-rPPG, 6 epochs, 300-frame windows, batch 4, subject-grouped
-85/10/5, last epoch. Predates the pooled 90/3/7 split and MR-NIRP, **and was
-measured with the spectral-peak readout that the section above replaced**, so it
-is a record of that run rather than of the current default. Re-running `train`
-regenerates it under the interval readout.
+Pooled test split, 4482 windows of 300 frames, batch 4, `alpha=0.8`, interval
+readout, 45-149 bpm. Checkpoint at epoch 48 of a 50-epoch schedule
+(`build/runs/cfmamba/eval_test_last.json`).
 
 | split | MAE | RMSE | rho | MACC | SNR | n |
 |---|---|---|---|---|---|---|
-| test | 3.84 | 10.88 | +0.735 | 0.772 | +1.10 dB | 3163 |
-| test, MCD | 3.84 | 10.89 | +0.734 | 0.772 | +1.10 dB | 3150 |
-| test, UBFC | 2.97 | 6.96 | +0.938 | 0.844 | +1.49 dB | 13 |
-| dev (full) | 4.49 | 11.17 | +0.741 | 0.743 | +0.23 dB | 6418 |
+| test, all | 2.75 | 5.20 | +0.912 | 0.833 | +2.69 dB | 4482 |
+| test, MCD | 2.77 | 5.23 | +0.909 | 0.832 | +2.66 dB | 4419 |
+| test, MR-NIRP | 1.34 | 2.27 | +0.951 | 0.925 | +5.19 dB | 42 |
+| test, UBFC | 1.44 | 1.96 | +0.997 | 0.832 | +3.93 dB | 21 |
+
+MCD is 98.6% of those windows, so the aggregate is close to the MCD row by
+construction. The MR-NIRP and UBFC rows are 42 and 21 windows.
 
 Published in-dataset results on MCD-rPPG, from Egorov et al. (2025), which reports
 MAE only:
@@ -221,46 +228,51 @@ MAE only:
 | Egorov et al. | 4.86 |
 | PBV, training-free | 15.37 |
 
-The split and the heart-rate readout band differ from that work, so the comparison
-is indicative rather than exact. That work reads heart rate over 0.5-3 Hz on
-10-second segments; this implementation uses 45-150 bpm.
+The split and the heart-rate range differ from that work, so the comparison is
+indicative rather than exact. That work reads heart rate over 0.5-3 Hz on
+10-second segments; this implementation uses 45-149 bpm and the interval readout,
+which is not the readout those tables were produced with.
 
-Training loss fell 3.370, 2.560, 2.336, 2.175, 2.036, 1.949 across the six epochs,
-at `alpha=0.2`, so the totals are not comparable with a run at the current 0.8.
-Dev loss fell 2.919 to 2.200 and remained below training loss throughout. The
-temporal term fell from 0.774 to 0.575, corresponding to a waveform Pearson
-correlation of 0.226 to 0.425.
-
-A run with identical settings collapsed to a constant-output minimum, with the
-temporal term at exactly 1.000 and dev MAE 30.97. Run-to-run variance at this
-learning rate is large, and a single run does not establish the result.
+An earlier run at these settings settled at a constant output, with the temporal
+term at 1.000 and dev MAE 30.97. Run-to-run variance at this learning rate is
+large, and one run does not establish the result.
 
 ## Resuming
 
-`train --resume` continues from `<out>/last.pt`, restoring model weights, AdamW
+`train --resume` continues from `<run-dir>/last.pt`, restoring model weights, AdamW
 moment estimates, and the learning-rate scheduler's step counter. The schedule is a
 linear warmup into a cosine of length `steps_per_epoch * epochs`, so `--epochs`,
 `--batch`, `--frames` and the step count per epoch must match the checkpoint. A
 mismatch raises rather than continuing a different schedule without notice.
+
+`<run-dir>/best.pt` is written whenever an epoch sets a new lowest dev loss.
+`last.pt` is overwritten each epoch, so an earlier epoch cannot be recovered from
+it. The reported result is still the last epoch; `best.pt` is scored only by
+pointing `predict --model` or `readout --model` at it.
 
 `history.json` and `last.pt` are written after every epoch.
 
 ## Tests
 
 ```bash
-uv run python -m pytest tests/ -q     # 487 tests, requires an idle GPU
+uv run python -m pytest tests/ -q     # 501 tests, requires an idle GPU
 ```
 
 One test file per module, named for the paper equation it constrains. Several are
 regressions for faults that produced no error:
 
-- a frequency band selected by FFT bin index covered 45-202 bpm at T=160 and
+- a frequency range selected by FFT bin index covered 45-202 bpm at T=160 and
   24-108 bpm at T=300 (`tests/test_band_mask.py`)
 - a repointed manifest severed MCD's contact PPG from its clips, so `load_ppg`
   returned None and the target turned into zeros for a full epoch
   (`tests/test_remux.py`)
 - the per-item augmentation RNG was seeded from a constant, so every segment saw
-  one fixed crop and one fixed flip for an entire run (`tests/test_augment.py`)
+  one fixed crop and one fixed flip for a whole run (`tests/test_augment.py`)
+- `samples --seconds` was read through a default argument bound at import, so the
+  option was accepted and discarded (`tests/test_regressions.py`)
+- `info` re-derived an 85/10/5 split rather than reading the manifest's own
+  column, and so reported a partition no training run used
+  (`tests/test_regressions.py`)
 
 `check_targets_are_supervised` samples 64 training windows before the model is
 built and raises if more than 20% have flat targets.
@@ -271,5 +283,4 @@ built and raises if more than 20% have flat targets.
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | each module, the equation it implements, and where the papers are silent or inconsistent |
 | [DATASETS.md](DATASETS.md) | what each corpus supports, and what was measured |
-| [AGGREGATION_PLAN.md](AGGREGATION_PLAN.md) | the original data plan |
-| [IMAGE_PIPELINE_PLAN.md](IMAGE_PIPELINE_PLAN.md) | skin isolation and brightness normalisation |
+| [MODEL_CARD.md](MODEL_CARD.md) | the model card, for release alongside weights |

@@ -2,22 +2,13 @@
 
 Nothing is materialised to disk. Storing preprocessed frames for all of MCD at
 256x256 would need roughly 3 TB at native frame rate; decoding a window costs
-0.3-0.6 s on these files and parallelises across workers, so the frames are
-produced when the batch needs them and thrown away afterwards.
+0.3-0.6 s on these files and parallelises across workers, so frames are produced
+when the batch needs them and released afterwards.
 
-The expensive, deterministic parts -- face box and skin mask -- are read from
-build/clips.parquet, precomputed once by src/model/clips.py. Only decoding and
-arithmetic happen here.
+The deterministic parts -- face box and skin mask -- are read from the manifest,
+precomputed once by src/model/clips.py. Only decoding and arithmetic happen here.
 
-Each item is one window: frames, skin mask, contact-PPG waveform and labels.
-
-Two representations were removed along with VitalsNet. `normalise_brightness`
-subtracted each frame's mean skin luma and routed the pulse through a separate
-mean_Y branch, which no longer exists -- keeping the flag would remove the signal
-from the pixels and then discard it. `frame_diff` fed normalised frame differences
-instead of frames; CFMamba-Phys's Fusion Stem computes its own four differences
-internally and needs the raw frames alongside them, so pre-differencing would
-delete the raw branch's input.
+Each item is one window: frames, skin mask and the contact-PPG waveform.
 """
 
 from __future__ import annotations
@@ -33,6 +24,7 @@ import polars as pl
 import torch
 from torch.utils.data import Dataset
 
+from ..aggregation.splits import DEFAULT_FRAMES as SPLIT_FRAMES
 from ..aggregation.video import read_window
 from ..paths import BUILD_ROOT
 from . import framecache
@@ -45,25 +37,17 @@ from .waveform import hr_from_waveform, load_ppg, sample_ppg
 cv2.setNumThreads(1)
 
 # Resolution the cached SegFace skin mask was computed at, by src/model/clips.py.
-# It is the mask's coordinate frame and nothing else -- frames are never routed
-# through it. See _geometry.
+# It is the mask's coordinate frame; frames are never routed through it. See
+# _geometry.
 MASK_RES = 256
-# Kept as an alias: src/model/clips.py stores masks at this side.
-CROP = MASK_RES
 # Fraction of the face box the augmentation crop keeps, leaving the remaining
-# 12.5% as translation jitter. Was expressed as 224-out-of-256; a fraction states
-# the same thing without implying an intermediate resolution that no longer exists.
+# 12.5% as translation jitter.
 AUG_FRACTION = 224 / 256
-# What the model is actually fed. CFMamba-Phys, RhythmMamba and RhythmFormer all
+# What the model is fed. CFMamba-Phys, RhythmMamba and RhythmFormer all
 # specify 128x128.
 MODEL_RES = 128
 
-DEFAULT_CLIP_FRAMES = 300
-# Heart rate only. Blood pressure is out of scope: CFMamba-Phys predicts a
-# waveform and reads no scalar target at all, and nothing on disk pairs facial
-# video with blood pressure and a recoverable pulse (see DATASETS.md). The
-# manifest still carries sbp_mmhg and dbp_mmhg -- they are dead here, not gone.
-DEFAULT_TARGETS = ("hr_bpm",)
+DEFAULT_CLIP_FRAMES = SPLIT_FRAMES
 
 # BT.601 luma weights. They sum to 1, which is what lets a constant added to R, G
 # and B shift Y by exactly that constant without touching chroma.
@@ -119,7 +103,6 @@ class WindowDataset(Dataset):
         train: bool = True,
         seed: int = 0,
         resolution: int = MODEL_RES,
-        targets: tuple[str, ...] = DEFAULT_TARGETS,
         apply_skin_mask: bool = False,
         frame_norm: str = "standardized",
         hr_balance: bool = True,
@@ -132,9 +115,6 @@ class WindowDataset(Dataset):
         self.train = train
         self.seed = seed
         self.resolution = resolution
-        # UBFC-rPPG has heart rate but no blood pressure, so which columns are
-        # returned has to follow the source rather than being fixed at three.
-        self.targets = tuple(targets)
         # Off by default: none of the three papers masks, and PGA's Gaussian prior
         # is what focuses the model on skin. The mask is still returned either way,
         # because PGA obtains that prior's centroid and spread from it.
@@ -167,7 +147,11 @@ class WindowDataset(Dataset):
         key = row["mask_path"]
         if key not in self._masks:
             packed = np.load(key)
-            self._masks[key] = np.unpackbits(packed)[: CROP * CROP].reshape(CROP, CROP).astype(bool)
+            self._masks[key] = (
+                np.unpackbits(packed)[: MASK_RES * MASK_RES]
+                .reshape(MASK_RES, MASK_RES)
+                .astype(bool)
+            )
         return self._masks[key]
 
     def _rng(self, index: int) -> random.Random:
@@ -330,7 +314,7 @@ class WindowDataset(Dataset):
         """Resample to `side`, choosing the filter by direction.
 
         INTER_AREA integrates every source pixel that lands in an output pixel, so
-        it preserves the local mean exactly -- which is the whole signal here, a
+        it preserves the local mean exactly, and the signal here is a
         spatially smooth sub-LSB brightness change. But **cv2.INTER_AREA degenerates
         to nearest-neighbour when requested to enlarge**: measured, a 4x4 ramp taken to
         8x8 comes back exactly equal to INTER_NEAREST (16 distinct values against
@@ -350,9 +334,9 @@ class WindowDataset(Dataset):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Random horizontal flip, applied to frames and skin mask together.
 
-        Together is the whole point. PGA obtains its Gaussian prior's centroid from
+        Both together. PGA obtains its Gaussian prior's centroid from
         the mask, so switching one without the other aims the physiological prior at
-        the mirror image of the face the model is actually looking at -- and
+        the mirror image of the face the model is given -- and
         nothing raises, because both tensors keep their shape.
 
         A face is near-symmetric but not symmetric, and rPPG has no left/right
@@ -518,13 +502,7 @@ class WindowDataset(Dataset):
         item = {
             "frames": self._normalise(tensor),
             "skin": torch.from_numpy(np.ascontiguousarray(mask)).float(),
-            # A missing label becomes nan rather than raising: UBFC-rPPG has no
-            # blood pressure, and a waveform model never reads these anyway.
-            "targets": torch.tensor(
-                [float("nan") if row[t] is None else row[t] for t in self.targets],
-                dtype=torch.float32,
-            ),
-            # What the timebase was actually stretched by, so a caller can undo the
+            # What the timebase was stretched by, so a caller can undo the
             # augmentation when reporting a heart rate in real units.
             "fps_scale": torch.tensor(k, dtype=torch.float32),
             "clip_id": row["clip_id"],
@@ -551,7 +529,7 @@ def split_manifest(
     **Pass segments, not clips.** `assign` balances the split by row count, so
     giving it clips gives 85/10/5 in *clips* -- and clip length varies by 4x
     across this corpus (UBFC's 43-118 s against MCD's 111-225 s), so the ratios
-    the model actually trains and is scored on would drift from the target. Call
+    the model trains and is scored on would drift from the target. Call
     `expand_to_segments` first and the row count is the segment count.
     """
     from ..aggregation.splits import assign
@@ -569,7 +547,7 @@ def prepare_splits(
 ) -> dict[str, pl.DataFrame]:
     """Segments, then a subject-grouped 85/10/5 over them. The training entrypoint.
 
-    Order matters and is the whole point of this function existing: enumerate every
+    Order matters, and is why this function exists: enumerate every
     fixed-length window first, then split. Splitting clips and expanding afterwards
     gives the right number of *recordings* per side and the wrong number of
     *examples*.
@@ -601,7 +579,7 @@ def expand_to_segments(
     Done in polars rather than by building dicts, for two reasons beyond speed.
     Rebuilding a frame from `to_dicts()` **re-infers the schema from the first 100
     rows**, so a column that is null across those rows becomes dtype Null and the
-    first real value later in the frame fails to append -- which is exactly what a
+    first real value later in the frame fails to append -- which is what a
     pooled manifest looks like, since MR-NIRP's columns are null on every MCD row
     and MCD sorts first. And the count comes from `segment_counts`, the same
     expression the splitter weights by, so the two cannot drift apart.
@@ -611,7 +589,7 @@ def expand_to_segments(
     stride = (stride_frames if stride_frames is not None else n_frames) / fps
     return (
         manifest.with_columns(
-            segment_counts(manifest, n_frames, fps, stride_frames).alias("_segments")
+            segment_counts(n_frames, fps, stride_frames).alias("_segments")
         )
         .with_columns(
             window_start_s=pl.int_ranges(0, pl.col("_segments")) * stride

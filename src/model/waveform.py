@@ -1,15 +1,11 @@
 """Pulse-waveform supervision: targets, loss and heart rate readout.
 
-Regressing a single heart rate per clip gives the model one number to fit per
-recording -- about 30 of them in a training fold -- and asks it to resolve a
-frequency from a 5.33 s window whose DFT bins are 11.25 bpm apart. Measured, a
-spectral estimator on that window has a median error of 15.8 bpm, which is the
-scale of the errors the trained models produce.
+The target is one PPG sample per frame. Heart rate is read off the predicted
+waveform afterwards rather than regressed.
 
-Predicting the pulse waveform instead gives one target per frame, and heart rate
-is then read off the predicted waveform by FFT rather than learned. The label also
-stops untruthful: a clip-level median departs from the true heart rate of any given
-5.33 s window by 4.02 bpm on average.
+Measured on this corpus: a clip-level heart-rate label departs from the true rate
+of a given 5.33 s window by 4.02 bpm on average, and a spectral estimator on that
+window has a median error of 15.8 bpm, because its DFT bins are 11.25 bpm apart.
 """
 
 from __future__ import annotations
@@ -24,22 +20,20 @@ HR_BAND = (0.7, 3.5)          # 42-210 bpm
 
 def load_ppg(
     clip_dir: Path, video_path: Path | None = None, fps: float | None = None,
-    source: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """Contact PPG as (times in seconds from clip start, values), or None.
 
-    One line of dispatch over `src.datasets`, where each corpus owns its own
-    label format. It used to be three inline branches here, which meant a new
-    corpus had to be remembered in two files -- and forgetting this one is
-    invisible: a None return makes `WindowDataset._waveform` substitute zeros,
-    and the model trains against a flat target without anything raising.
+    Dispatch over `src.datasets`, where each corpus owns its own label format. A
+    None return makes `WindowDataset._waveform` substitute zeros and the model
+    then trains against a flat target, so `check_targets_are_supervised` samples
+    windows before the first batch.
 
     Imported inside the function because `src.datasets.mrnirp` imports
     `hr_from_waveform` from this module.
     """
     from ..datasets import load_ppg as dispatch
 
-    return dispatch(clip_dir, video_path=video_path, fps=fps, source=source)
+    return dispatch(clip_dir, video_path=video_path, fps=fps)
 
 
 def sample_ppg(

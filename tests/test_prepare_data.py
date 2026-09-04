@@ -347,4 +347,4 @@ def test_a_detection_is_used_as_given() -> None:
 
 
 def _dataset_for_geometry(train: bool) -> WindowDataset:
-    return WindowDataset(_manifest(1), train=train, targets=("hr_bpm",))
+    return WindowDataset(_manifest(1), train=train)

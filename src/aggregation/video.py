@@ -48,7 +48,7 @@ def _duration_from_keyframes(path: Path) -> float:
 # loader, the pair was 3.38 s of every 5.96 s spent producing 11 segments: 57% of
 # the time, to re-derive constants. One entry per clip per worker is enough.
 #
-# 4096 covers this corpus (3653 clips) in a single worker without eviction.
+# 4096 covers this corpus (3692 clips) in a single worker without eviction.
 @functools.lru_cache(maxsize=4096)
 def _probe_uncached(path: Path) -> dict:
     out = subprocess.run(
@@ -103,7 +103,7 @@ def read_keyframes(
     Face detection and skin segmentation need a spread of frames across the clip,
     not every frame. Decoding the whole stream to sample 24 of them costs 3.15 s per
     MCD recording against 0.30 s for keyframes alone -- a 10x difference, which over
-    3605 clips is three hours versus twenty minutes.
+    3692 clips is three hours against twenty minutes.
     """
     info = probe(path)
     w, h = info["width"], info["height"]
@@ -163,7 +163,7 @@ def read_window(
     CLBP-300 at 60 fps but 6.7 s of MCD's 24 fps IriunWebcam -- and TSM's one-frame
     shift covers a different interval in each. The cost is real: 60 -> 30 halves the
     Nyquist limit to 15 Hz, and 24 -> 30 interpolates frames bringing no new
-    information. Uniform timebase is worth more than that here, because the model
+    information. A uniform timebase outweighs that here, because the model
     cannot otherwise tell how much time a window spans.
 
     Seeking is cheap on these files: MCD is MPEG-4 with keyframes every 0.4 s, so
@@ -273,16 +273,15 @@ def read_window(
 
 
 def read_frames(
-    path: Path, target_fps: float | None = None, max_side: int = WORK_MAX_SIDE
+    path: Path, max_side: int = WORK_MAX_SIDE
 ) -> tuple[np.ndarray, int, int] | None:
-    """Decode to (T, H, W, 3) uint8 BGR, longest side <= max_side.
+    """Decode to (T, H, W, 3) uint8 BGR at the source frame rate, longest side <= max_side.
 
-    target_fps=None decodes at the source rate, which is the default and what
-    every caller should want. Resampling costs exactly the detail this dataset
-    exists to capture: CLBP-300 is 60 fps and forcing it to 30 halves the Nyquist
-    limit to 15 Hz, discarding the upstroke and dicrotic-notch harmonics that
-    carry pulse pressure. MCD's IriunWebcam is 24 fps and forcing it up to 30
-    interpolates frames that contain no new information.
+    No frame-rate resampling. Resampling costs the detail this dataset exists to
+    capture: at 60 fps, forcing to 30 halves the Nyquist limit to 15 Hz and
+    discards the upstroke and dicrotic-notch harmonics; MCD's IriunWebcam is
+    24 fps, and forcing it up to 30 interpolates frames carrying no new
+    information. `WindowDataset` resamples onto TARGET_FPS at load time instead.
 
     Frames are read off the pipe one at a time rather than buffered whole. A
     180 s clip at working resolution is ~5 GB, and capturing that as a single
@@ -294,12 +293,9 @@ def read_frames(
     ow, oh = (int(w * scale) // 2) * 2, (int(h * scale) // 2) * 2
     frame_bytes = ow * oh * 3
 
-    filters = f"scale={ow}:{oh}"
-    if target_fps is not None:
-        filters = f"fps={target_fps}," + filters
     cmd = [
         "ffmpeg", "-v", "error", "-i", str(path),
-        "-vf", filters,
+        "-vf", f"scale={ow}:{oh}",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
     ]
     frames: list[np.ndarray] = []

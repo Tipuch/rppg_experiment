@@ -61,7 +61,7 @@ def remux_path(out_dir: Path, clip_id: str) -> Path:
 def is_indexed(path: Path) -> bool:
     """Whether ffprobe can read a duration and a frame count from `path`.
 
-    This is the whole point of the remux, so it doubles as the completion test:
+    This is what the remux produces, so it doubles as the completion test:
     a file that reports these is one ffmpeg can seek in, and a partially written
     file is not.
     """

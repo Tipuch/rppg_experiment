@@ -38,7 +38,7 @@ from pathlib import Path
 import polars as pl
 
 from ..paths import BUILD_ROOT
-from .splits import RATIOS_MRNIRP, assign, segment_counts
+from .splits import RATIOS_POOLED, assign, segment_counts
 
 # Where each corpus is looked for, best source first. Candidates rather than one
 # path because the manifests are written by different commands and a user may
@@ -52,14 +52,12 @@ DEFAULT_PARTS: dict[str, tuple[Path, ...]] = {
     "mcd": (BUILD_ROOT / "clips_remux.parquet",
             BUILD_ROOT / "clips.parquet"),
 }
-OUT_PARQUET = BUILD_ROOT / "clips_all.parquet"
-
 # Rebuilt here over the pooled table, so a per-corpus split cannot leak in.
 DROP_COLUMNS = ("split", "n_segments")
 
 
 def _first_with_rows(source: str, candidates: tuple[Path, ...]) -> pl.DataFrame | None:
-    """The first candidate file that actually holds rows for `source`."""
+    """The first candidate file holding rows for `source`."""
     for path in candidates:
         if not path.exists():
             continue
@@ -97,13 +95,13 @@ def load_parts(parts: dict[str, tuple[Path, ...]] = DEFAULT_PARTS) -> pl.DataFra
 
 def build(
     parts: dict[str, tuple[Path, ...]] = DEFAULT_PARTS,
-    ratios: dict[str, float] = RATIOS_MRNIRP,
+    ratios: dict[str, float] = RATIOS_POOLED,
     seed: int = 20260822,
     n_frames: int = 300,
 ) -> pl.DataFrame:
     """The pooled manifest with a `split` column, balanced in segments per source."""
     pooled = load_parts(parts)
-    weighted = pooled.with_columns(segment_counts(pooled, n_frames).alias("n_segments"))
+    weighted = pooled.with_columns(segment_counts(n_frames).alias("n_segments"))
     return assign(
         weighted, ratios=ratios, seed=seed, weight="n_segments",
         order="size", stratify="source",

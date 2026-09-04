@@ -34,7 +34,7 @@ def _dataset(train: bool = True, **kwargs) -> WindowDataset:
         "box_x": [0], "box_y": [0], "box_side": [0], "hr_bpm": [72.0],
         "fps": [30.0],
     })
-    return WindowDataset(manifest, n_frames=160, train=train, targets=("hr_bpm",), **kwargs)
+    return WindowDataset(manifest, n_frames=160, train=train, **kwargs)
 
 
 def _with_tone(dataset: WindowDataset, bpm: float) -> dict:
@@ -170,7 +170,7 @@ def _segment_dataset(train: bool) -> WindowDataset:
         "box_x": [0], "box_y": [0], "box_side": [0], "hr_bpm": [72.0],
         "fps": [30.0], "window_start_s": [20.0],
     })
-    return WindowDataset(manifest, n_frames=160, train=train, targets=("hr_bpm",))
+    return WindowDataset(manifest, n_frames=160, train=train)
 
 
 def test_an_enumerated_segment_starts_exactly_where_it_was_enumerated() -> None:

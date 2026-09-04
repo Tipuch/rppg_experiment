@@ -22,8 +22,7 @@ text -- is fixed to one length and could not have produced that measurement. The
 channel-axis reading, which is both what Eq. 17's own reference to Eqs. 10-11
 implies and what FreTS (CFMamba [33]) actually does, has no such problem.
 
-**Reading the referenced sources moved the fit, and improved it.** Two module shapes
-were wrong before FreTS and CMamba were read, and both errors were in the
+Two module shapes were wrong before FreTS and CMamba were read, both in the
 direction of too few parameters:
 
   - PTS-FFN's projection is (N, N) over channels, not a (T, T) frequency matrix
@@ -31,15 +30,13 @@ direction of too few parameters:
   - CAM's hidden layer is set by an *expansion* rate, CMamba's term, not by a
     squeeze-and-excitation bottleneck ratio (cam.py).
 
-With both corrected the configuration below reproduces the parameter count to
--0.6% and the MAC count to -2.0%, against -2.9%/+2.1% for the best fit available
-beforehand. A reconstruction getting *closer* to two independent published numbers
-as its module shapes are corrected against the sources is the available evidence
-that the shapes are right.
+Correcting both moved the fit from -2.9%/+2.1% to -0.6%/-2.0% under the Mamba-1
+scan. The current configuration, on Mamba-3, reproduces the parameter count to
++2.5% and the MAC count to -2.0%.
 
-**What the fit does not establish.** Several configurations still land inside
-tolerance. What remained across every configuration search, before and after the corrections, is
-depth=4 and a stem width of 16. The rest is a fit.
+The fit does not establish a unique configuration: several land inside tolerance.
+What held across every configuration search, before and after the corrections, is
+depth=4 and a stem width of 16.
 
 **Where the budget cannot help at all.** CAM is the only module in the model that
 is parameter-heavy and compute-free -- Eq. 6 pools over T first, so its two MLPs

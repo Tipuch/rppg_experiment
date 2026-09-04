@@ -1,24 +1,21 @@
 """Video-level metrics: MAE, RMSE, MAPE, Pearson rho and SNR.
 
 CFMamba Eqs. 22-27. Every number reported for this project comes through here, so
-the definitions are worth recording rather than assuming:
+the definitions are recorded here:
 
   MAE, RMSE, MAPE  over per-window heart rates, in bpm
   rho              Pearson correlation between predicted and true rate *across
-                   windows*, which is a different question from whether any one
-                   estimate is close. A constant predictor scores a credible MAE
-                   and a rho of zero, and that gap is the whole point of reporting
-                   both.
+                   windows*, a different question from whether any one estimate is
+                   close. A constant predictor scores a plausible MAE and a rho of
+                   zero, which is why both are reported.
   SNR              in dB, on the predicted waveform against the true rate
 
 The ground-truth rate is read from the contact PPG over the same window, never
 from the manifest's label column -- see src/model/postprocess.compare.
 
-**A baseline is printed with every result.** POS and CHROM are classical
-estimators that need no training, and on UBFC-rPPG they publish at 4.08 and 4.06
-bpm MAE. A learned model that cannot beat them has not learned anything a
-sixteen-year-old algorithm does not already do. Predicting a mean, the baseline
-this project used before, is not meaningful for a waveform.
+POS and CHROM are the classical floor these numbers are read against. Neither
+needs training, and on UBFC-rPPG they publish at 4.08 and 4.06 bpm MAE.
+`src.cli baseline` scores them on the same windows.
 """
 
 from __future__ import annotations
@@ -36,9 +33,9 @@ from .postprocess import compare
 def summarise(rows: Iterable[dict[str, float]]) -> dict[str, float]:
     """Aggregate per-window results into the five reported metrics.
 
-    Windows whose rate could not be estimated -- a dead prediction, a clip with no
-    contact PPG -- are dropped and *counted*. Invisibly dropping them would let a
-    model that fails on the hard half of the data report the easy half's score.
+    Windows whose rate could not be estimated -- a flat prediction, a clip with no
+    contact PPG -- are dropped and counted. Dropping them without a count would let
+    a model that fails on the harder windows report the score of the rest.
     """
     rows = list(rows)
     usable = [
@@ -47,10 +44,9 @@ def summarise(rows: Iterable[dict[str, float]]) -> dict[str, float]:
         and math.isfinite(r.get("hr_true", float("nan")))
     ]
     # Over every window, including the ones whose rate could not be read. A window
-    # the readout failed on still has a well-defined loss, and dropping it here
-    # would make the dev loss an average over whichever windows happened to work
-    # that epoch -- a moving denominator, which is the one thing a loss curve must
-    # not have.
+    # the readout failed on still has a defined loss, and dropping it here would
+    # make the dev loss an average over whichever windows worked that epoch: a
+    # moving denominator, which a loss curve cannot have.
     terms = {
         name: float(np.mean(values))
         for name in ("loss", "time", "freq")
@@ -66,7 +62,7 @@ def summarise(rows: Iterable[dict[str, float]]) -> dict[str, float]:
     macc_values = np.array([r.get("macc", np.nan) for r in usable])
 
     # A single window, or a constant prediction, leaves rho undefined rather than
-    # zero. Reporting 0.0 there would read as "measured no correlation" when
+    # zero. Reporting 0.0 would read as a measured absence of correlation when
     # nothing was measurable.
     if len(usable) > 1 and predicted.std() > 1e-9 and truth.std() > 1e-9:
         rho = float(np.corrcoef(predicted, truth)[0, 1])
@@ -110,13 +106,11 @@ def evaluate(
     Returns rows rather than an aggregate, so a caller can group by subject, look
     at the worst clips, or re-aggregate without a second forward pass.
 
-    **The loss is scored here too**, per window, because otherwise nothing records
-    it on the unseen side: heart-rate MAE is what the papers report, but MAE on a
-    handful of subjects is quantised to the periodogram bin spacing and swings by
-    several bpm between epochs on sampling noise alone. A dev loss moves smoothly,
-    on the same scale as the training loss, and is the only thing that shows the
-    generalisation gap opening. Eq. 19's two terms are kept apart for the reason
-    they always are -- they fail differently.
+    The loss is scored here too, per window. Heart-rate MAE is what the papers
+    report, but MAE over a handful of subjects is quantised to the periodogram bin
+    spacing and swings by several bpm between epochs on sampling noise. A dev loss
+    moves on the same scale as the training loss and shows the generalisation gap.
+    Eq. 19's two terms are kept apart because they fail differently.
 
     The forward pass already happened, so this costs one extra correlation and one
     extra periodogram per window.
@@ -161,15 +155,12 @@ def evaluate(
 
 
 def per_source(rows: list[dict]) -> list[tuple[str, dict[str, float]]]:
-    """Metrics grouped by corpus. Not optional once more than one is in the split.
+    """Metrics grouped by corpus. Required once the split holds more than one.
 
-    Under a straight 85/10/5 over everything on disk, MCD-rPPG contributes 5979 of
-    the 6027 test segments and UBFC-rPPG contributes 48 -- 0.8%. An aggregate over
-    that is a measurement of MCD wearing a label that states "test", and MCD is the
-    corpus whose video measured below chance for a recoverable pulse
-    (DATASETS.md). Reporting the split by source is what keeps the two questions --
-    "did it learn a pulse" and "did it learn MCD's population statistics" --
-    separate.
+    On the pooled split MCD-rPPG is ~98% of the test segments, and it is the corpus
+    whose video measured below chance for a recoverable pulse (DATASETS.md). An
+    aggregate over that is largely a measurement of MCD. Reporting by source keeps
+    "did it learn a pulse" apart from "did it learn MCD's population statistics".
     """
     groups: dict[str, list[dict]] = {}
     for row in rows:
@@ -183,8 +174,8 @@ def per_source(rows: list[dict]) -> list[tuple[str, dict[str, float]]]:
 def per_subject(rows: list[dict]) -> list[tuple[str, dict[str, float]]]:
     """Metrics grouped by subject, worst MAE first.
 
-    An aggregate hides which people the model fails on, and with 42 subjects the
-    aggregate is a mean over a small enough set that one bad subject moves it.
+    An aggregate hides which people the model fails on, and over a few dozen
+    subjects one poor subject moves the mean.
     """
     subjects: dict[str, list[dict]] = {}
     for row in rows:

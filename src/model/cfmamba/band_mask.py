@@ -3,7 +3,7 @@
 This is the module that makes the DF-FFN "physiology-aware". A pulse concentrates
 its energy in a narrow band and everything else -- motion, illumination drift,
 sensor noise -- spreads across the spectrum, so a filter that keeps one band and
-attenuates the rest is a prior worth building in rather than learning from
+attenuates the rest is a prior built in rather than learned from
 scratch. What the network chooses is *where* inside the human range that band sits
 and how wide it is; it cannot choose to leave the range.
 
