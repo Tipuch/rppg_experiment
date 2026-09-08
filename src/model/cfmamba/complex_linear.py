@@ -38,6 +38,24 @@ from torch import nn
 ACTIVATIONS = ("gelu", "relu", None)
 
 
+def complex_activation_parts(
+    real: torch.Tensor, imag: torch.Tensor, kind: str | None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """FreTS Eq. 7 on the two components held as separate real tensors.
+
+    This is the operation; `complex_activation` is the same thing wrapped in a
+    `torch.complex`. Carrying the parts is what the LiteRT export needs, since it
+    has no complex tensor type -- see dft.py.
+    """
+    if kind is None:
+        return real, imag
+    if kind == "relu":
+        return F.relu(real), F.relu(imag)
+    if kind == "gelu":
+        return F.gelu(real), F.gelu(imag)
+    raise ValueError(f"unknown activation {kind!r}, expected one of {ACTIVATIONS}")
+
+
 def complex_activation(z: torch.Tensor, kind: str | None) -> torch.Tensor:
     """FreTS Eq. 7: apply the activation to the real and imaginary parts separately.
 
@@ -48,11 +66,7 @@ def complex_activation(z: torch.Tensor, kind: str | None) -> torch.Tensor:
     """
     if kind is None:
         return z
-    if kind == "relu":
-        return torch.complex(F.relu(z.real), F.relu(z.imag))
-    if kind == "gelu":
-        return torch.complex(F.gelu(z.real), F.gelu(z.imag))
-    raise ValueError(f"unknown activation {kind!r}, expected one of {ACTIVATIONS}")
+    return torch.complex(*complex_activation_parts(z.real, z.imag, kind))
 
 
 class ComplexLinear(nn.Module):
@@ -81,14 +95,25 @@ class ComplexLinear(nn.Module):
             self.register_parameter("bias_re", None)
             self.register_parameter("bias_im", None)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        real, imag = x.real, x.imag
+    def forward_parts(
+        self, real: torch.Tensor, imag: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Eqs. 10-11 on the two components held separately.
+
+        The arithmetic below is what `forward` has always done -- the weights were
+        already two real tensors and the product was already written out by hand.
+        Only the container differs, which is what makes the LiteRT export a change
+        of plumbing rather than of the model.
+        """
         out_re = real @ self.weight_re - imag @ self.weight_im
         out_im = real @ self.weight_im + imag @ self.weight_re
         if self.bias_re is not None:
             out_re = out_re + self.bias_re
             out_im = out_im + self.bias_im
-        return torch.complex(out_re, out_im)
+        return out_re, out_im
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.complex(*self.forward_parts(x.real, x.imag))
 
     def extra_repr(self) -> str:
         return (f"in_features={self.in_features}, out_features={self.out_features}, "

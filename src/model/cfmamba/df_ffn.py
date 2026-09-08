@@ -36,6 +36,7 @@ class DualFrequencyFFN(nn.Module):
         n_frames: int = 300,
         pts_bins: int = 64,
         activation: str | None = "gelu",
+        spectral: str = "fft",
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -47,10 +48,13 @@ class DualFrequencyFFN(nn.Module):
         # physiological component from the noise sharing its channels.
         self.proj_in = nn.Linear(dim, hidden)
         self.activation = activation
-        self.cs = ChannelSpectralFFN(hidden, activation=activation)
+        # spectral="matmul" swaps both transform pairs for constant cosine and
+        # sine matrices, which is what an FFT-less runtime needs. Weights are
+        # untouched either way; see dft.py.
+        self.cs = ChannelSpectralFFN(hidden, activation=activation, spectral=spectral)
         self.pts = PhysiologyTemporalSpectralFFN(
             hidden, fps=fps, mode=pts_mode, n_frames=n_frames, n_bins=pts_bins,
-            activation=activation,
+            activation=activation, spectral=spectral,
         )
         self.proj_out = nn.Linear(hidden, dim)
 

@@ -16,7 +16,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .complex_linear import ComplexLinear, complex_activation
+from .complex_linear import ComplexLinear, complex_activation, complex_activation_parts
+from .dft import SPECTRAL, FixedDFT
 
 
 class ChannelSpectralFFN(nn.Module):
@@ -27,13 +28,29 @@ class ChannelSpectralFFN(nn.Module):
     positions" (after Eq. 11). That is what keeps this stage length-agnostic.
     """
 
-    def __init__(self, hidden: int, activation: str | None = "gelu") -> None:
+    def __init__(
+        self, hidden: int, activation: str | None = "gelu", spectral: str = "fft"
+    ) -> None:
         super().__init__()
+        if spectral not in SPECTRAL:
+            raise ValueError(f"unknown spectral {spectral!r}, expected one of {SPECTRAL}")
         self.hidden = hidden
         self.activation = activation
+        self.spectral = spectral
         self.linear = ComplexLinear(hidden, hidden)
+        # "matmul" replaces the transform pair with two constant matrices, for the
+        # runtimes that have no FFT. The transform axis here is `hidden`, which was
+        # already fixed at construction, so this costs nothing in generality --
+        # see dft.py. `CFMambaPhys` collapses these onto one instance per length
+        # afterwards (`share_fixed_dfts`): the tables are identical in every block.
+        self.dft = FixedDFT(hidden) if spectral == "matmul" else None
+
+    def extra_repr(self) -> str:
+        return f"hidden={self.hidden}, activation={self.activation}, spectral={self.spectral}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.dft is not None:
+            return self._forward_matmul(x)
         # Eq. 9: full FFT over the channel axis, as written. rfft would halve the
         # weight matrix, but the paper specifies W in C^(N x N), and the parameter
         # budget is what has to decide between the two readings.
@@ -46,3 +63,13 @@ class ChannelSpectralFFN(nn.Module):
         # learned map that no real-valued signal can express; discarding it is what
         # makes this a real-to-real layer, and is what FreTS does.
         return torch.fft.ifft(spectrum, dim=-1).real
+
+    def _forward_matmul(self, x: torch.Tensor) -> torch.Tensor:
+        """The same three steps with the parts carried separately. No complex tensors.
+
+        The channel axis is already last, so no transpose is needed.
+        """
+        real, imag = self.dft.analyse(x)
+        real, imag = self.linear.forward_parts(real, imag)
+        real, imag = complex_activation_parts(real, imag, self.activation)
+        return self.dft.synthesise_real(real, imag)

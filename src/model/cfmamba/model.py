@@ -25,6 +25,7 @@ from torch import nn
 
 from .block import ChannelAdaptiveMambaBlock
 from .df_ffn import DualFrequencyFFN
+from .dft import SPECTRAL, share_fixed_dfts
 from .fusion_stem import FusionStem
 from .mamba_layer import (
     DEFAULT_CHUNK_SIZE,
@@ -33,6 +34,7 @@ from .mamba_layer import (
     DEFAULT_HEADDIM,
     DEFAULT_MIMO_RANK,
     DEFAULT_ROPE_FRACTION,
+    DEFAULT_SCAN,
 )
 from .pga import PhysiologyGuidedAttention
 from .vanilla_ffn import VanillaFFN
@@ -119,6 +121,14 @@ class CFMambaPhys(nn.Module):
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         paths: int = 3,
         direction: str = DEFAULT_DIRECTION,
+        # "export" swaps the Triton scan for plain PyTorch. Same weights, same
+        # output to Pearson 0.99999; needed to run off CUDA at all. See
+        # mamba_layer.py.
+        scan: str = DEFAULT_SCAN,
+        # "matmul" replaces DF-FFN's four fft/ifft pairs with constant cosine and
+        # sine matrices. Needed for any runtime without an FFT, and it fixes the
+        # clip length -- inference only. See dft.py.
+        spectral: str = "fft",
         cam_expansion: float = DEFAULT_CAM_EXPANSION,
         cam_pooling: str = "cmamba",
         use_pga: bool = True,
@@ -129,6 +139,11 @@ class CFMambaPhys(nn.Module):
         super().__init__()
         if ffn not in ("df", "vanilla", "none"):
             raise ValueError(f"unknown ffn {ffn!r}, expected df, vanilla or none")
+        # Checked here and not only in the FFN, because `spectral` reaches the FFN
+        # on the `ffn="df"` path alone: a typo on any other ablation would
+        # otherwise be accepted in silence and export the wrong implementation.
+        if spectral not in SPECTRAL:
+            raise ValueError(f"unknown spectral {spectral!r}, expected one of {SPECTRAL}")
         self.dim = dim
         self.depth = depth
         self.fps = fps
@@ -151,7 +166,7 @@ class CFMambaPhys(nn.Module):
                 return DualFrequencyFFN(
                     dim, self.ffn_hidden, fps=fps, pts_mode=pts_mode,
                     n_frames=n_frames, pts_bins=pts_bins,
-                    activation=ffn_activation,
+                    activation=ffn_activation, spectral=spectral,
                 )
             if ffn == "vanilla":
                 return VanillaFFN(dim, self.ffn_hidden)
@@ -162,11 +177,16 @@ class CFMambaPhys(nn.Module):
                 dim, make_ffn(), use_cam=use_cam, cam_expansion=cam_expansion,
                 cam_pooling=cam_pooling, d_state=d_state, headdim=headdim,
                 expand=expand, mimo_rank=mimo_rank, rope_fraction=rope_fraction,
-                chunk_size=chunk_size, paths=paths, direction=direction,
+                chunk_size=chunk_size, paths=paths, direction=direction, scan=scan,
             )
             for _ in range(depth)
         )
         self.predictor = Predictor(dim)
+        # Last, so it sees every submodule: each block built its own cosine/sine
+        # tables, they are identical, and at depth 4 the duplicates come to as
+        # much host memory as the whole model's parameters. The export is
+        # unaffected -- the converter dedupes constants itself. See dft.py.
+        share_fixed_dfts(self)
 
     def forward(self, frames: torch.Tensor, skin: torch.Tensor | None = None) -> torch.Tensor:
         """frames (B, T, 3, H, W) in [0, 1], skin (B, H, W) in [0, 1] -> (B, T).

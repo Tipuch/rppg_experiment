@@ -60,18 +60,34 @@ class GaussianBandMask(nn.Module):
     def bandwidth_hz(self) -> torch.Tensor:
         return BW_MIN_HZ + torch.sigmoid(self.theta_bw) * (BW_MAX_HZ - BW_MIN_HZ)
 
-    def forward(
-        self, n_frames: int, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
-        """(T,) real mask aligned to `torch.fft.fft`'s frequency ordering."""
-        freqs = torch.fft.fftfreq(n_frames, d=1.0 / self.fps, device=device, dtype=dtype)
-        centre = self.centre_hz.to(device=device, dtype=dtype)
-        bandwidth = self.bandwidth_hz.to(device=device, dtype=dtype)
+    def from_freqs(self, freqs: torch.Tensor) -> torch.Tensor:
+        """Eq. 15 evaluated on a frequency grid given in Hz.
+
+        Split out from `forward` so an export can supply a precomputed grid.
+        `torch.fft.fftfreq` needs the sample rate at call time, and freezing the
+        grid is what fixes the exported model to one fps -- which is a real
+        constraint, not a formality: a camera delivering 29.97 fps puts the band
+        somewhere slightly different from where it was trained.
+        """
+        centre = self.centre_hz.to(device=freqs.device, dtype=freqs.dtype)
+        bandwidth = self.bandwidth_hz.to(device=freqs.device, dtype=freqs.dtype)
         two_var = 2.0 * bandwidth * bandwidth
         return (
             torch.exp(-((freqs - centre) ** 2) / two_var)
             + torch.exp(-((freqs + centre) ** 2) / two_var)
         )
+
+    def freqs(
+        self, n_frames: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """The grid `torch.fft.fft` puts its bins on, in Hz."""
+        return torch.fft.fftfreq(n_frames, d=1.0 / self.fps, device=device, dtype=dtype)
+
+    def forward(
+        self, n_frames: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """(T,) real mask aligned to `torch.fft.fft`'s frequency ordering."""
+        return self.from_freqs(self.freqs(n_frames, device, dtype))
 
     def extra_repr(self) -> str:
         return (f"fps={self.fps}, f_c in [{FC_MIN_HZ}, {FC_MAX_HZ}] Hz, "

@@ -33,7 +33,8 @@ import torch
 from torch import nn
 
 from .band_mask import GaussianBandMask
-from .complex_linear import ComplexLinear, complex_activation
+from .complex_linear import ComplexLinear, complex_activation, complex_activation_parts
+from .dft import SPECTRAL, FixedDFT
 
 MODES = ("channel", "full", "diagonal", "none")
 
@@ -61,10 +62,19 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         n_frames: int = 300,
         n_bins: int = 64,
         activation: str | None = "gelu",
+        spectral: str = "fft",
     ) -> None:
         super().__init__()
         if mode not in MODES:
             raise ValueError(f"unknown mode {mode!r}, expected one of {MODES}")
+        if spectral not in SPECTRAL:
+            raise ValueError(f"unknown spectral {spectral!r}, expected one of {SPECTRAL}")
+        if spectral == "matmul" and mode == "full":
+            # mode="full" applies its (T, T) weight over the frequency axis, which
+            # the matmul path has already moved. It is the ruled-out reading anyway
+            # (see the module docstring), so it is refused rather than supported.
+            raise ValueError("spectral='matmul' does not support mode='full'")
+        self.spectral = spectral
         self.hidden = hidden
         self.fps = fps
         self.mode = mode
@@ -84,6 +94,22 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
             # mask alone and has to earn any deviation from it.
             self.gain_re = nn.Parameter(torch.ones(n_bins))
             self.gain_im = nn.Parameter(torch.zeros(n_bins))
+
+        if spectral == "matmul":
+            # The transform axis is time, so unlike CS-FFN this is where the model
+            # stops being length-agnostic. Fine for an inference-only export at a
+            # fixed T; see dft.py. `CFMambaPhys` collapses these onto one
+            # instance per length afterwards; see `share_fixed_dfts`.
+            self.dft = FixedDFT(n_frames)
+            # Non-persistent, so a checkpoint trained on the fft path still loads
+            # strict=True into a model built for export.
+            self.register_buffer(
+                "frozen_freqs",
+                torch.fft.fftfreq(n_frames, d=1.0 / fps, dtype=torch.float32),
+                persistent=False,
+            )
+        else:
+            self.dft = None
 
     def frequency_gain(self, freqs: torch.Tensor) -> torch.Tensor:
         """Interpolate the learned complex gain onto `freqs`, given in Hz.
@@ -130,7 +156,50 @@ class PhysiologyTemporalSpectralFFN(nn.Module):
         )
         return torch.complex(real, imag * phase_sign)
 
+    def extra_repr(self) -> str:
+        return (f"hidden={self.hidden}, mode={self.mode}, fps={self.fps}, "
+                f"spectral={self.spectral}")
+
+    def _forward_matmul(self, x: torch.Tensor) -> torch.Tensor:
+        """Eqs. 13-18 with no complex tensors and no FFT.
+
+        The transform runs over time, so time is moved to the last axis for the
+        two transforms and back to position 1 for the channel-axis projection
+        between them. Four transposes, all free next to the matmuls.
+        """
+        n_frames = x.shape[1]
+        if n_frames != self.n_frames:
+            raise ValueError(
+                f"spectral='matmul' was built for {self.n_frames} frames and "
+                f"cannot accept {n_frames}"
+            )
+        # Eq. 13, over time.
+        real, imag = self.dft.analyse(x.transpose(1, -1))
+        # Eq. 16: the physiological band, on the frozen grid.
+        mask = self.mask.from_freqs(self.frozen_freqs.to(x.dtype)).view(1, 1, -1)
+        real, imag = real * mask, imag * mask
+
+        if self.mode == "channel":
+            # Eq. 17 with the Eq. 10-11 shapes: mixing over channels, with the
+            # temporal frequency axis as a batch dimension.
+            real, imag = self.linear.forward_parts(
+                real.transpose(1, -1), imag.transpose(1, -1)
+            )
+            real, imag = complex_activation_parts(real, imag, self.activation)
+            real, imag = real.transpose(1, -1), imag.transpose(1, -1)
+        elif self.mode == "diagonal":
+            gain = self.frequency_gain(self.frozen_freqs.to(x.dtype))
+            gain_re, gain_im = gain.real.view(1, 1, -1), gain.imag.view(1, 1, -1)
+            real, imag = (
+                real * gain_re - imag * gain_im,
+                real * gain_im + imag * gain_re,
+            )
+        # Eq. 18.
+        return self.dft.synthesise_real(real, imag).transpose(1, -1)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.dft is not None:
+            return self._forward_matmul(x)
         n_frames = x.shape[1]
         # Eq. 13.
         spectrum = torch.fft.fft(x, dim=1)

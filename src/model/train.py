@@ -33,6 +33,7 @@ from torch.utils.data import DataLoader
 from ..aggregation.splits import DEFAULT_SEED, RATIOS
 from ..paths import BUILD_ROOT
 from .cfmamba import CFMambaPhys
+from .cfmamba.mamba_layer import DEFAULT_SCAN
 from .dataset import (
     DEFAULT_CLIP_FRAMES,
     MODEL_RES,
@@ -70,6 +71,10 @@ class TrainConfig:
     seed: int = DEFAULT_SEED
     n_frames: int = DEFAULT_CLIP_FRAMES
     resolution: int = MODEL_RES
+    # Recorded rather than assumed, because the model needs it too: the band mask
+    # and the frozen frequency grid are in Hz, so a checkpoint read back at the
+    # wrong fps filters a different band than it was trained on. See build_model.
+    fps: float = TARGET_FPS
 
     # Loss weights, RhythmFormer 3.4 / Table 13.
     alpha: float = DEFAULT_ALPHA
@@ -159,12 +164,21 @@ def _loader(segments: pl.DataFrame, cfg: TrainConfig, train: bool) -> DataLoader
     )
 
 
-def build_model(cfg: TrainConfig) -> CFMambaPhys:
+def build_model(
+    cfg: TrainConfig, *, scan: str = DEFAULT_SCAN, spectral: str = "fft"
+) -> CFMambaPhys:
+    """The constructor a training run used, so an ablation follows the checkpoint.
+
+    `scan` and `spectral` are not in `TrainConfig` on purpose: they change which
+    implementation runs, never what is learned, and the same weights load into any
+    combination. Training always uses the defaults. `scan="export",
+    spectral="matmul"` is the pair that runs off CUDA and exports to LiteRT.
+    """
     return CFMambaPhys(
-        n_frames=cfg.n_frames, fps=TARGET_FPS, stem_variant=cfg.stem_variant,
+        n_frames=cfg.n_frames, fps=cfg.fps, stem_variant=cfg.stem_variant,
         fuse_stem=cfg.fuse_stem, use_pga=cfg.use_pga, use_cam=cfg.use_cam,
         ffn=cfg.ffn, pts_mode=cfg.pts_mode, direction=cfg.direction,
-        ffn_activation=cfg.ffn_activation,
+        ffn_activation=cfg.ffn_activation, scan=scan, spectral=spectral,
     )
 
 

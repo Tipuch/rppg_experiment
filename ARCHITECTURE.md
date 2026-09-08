@@ -612,3 +612,77 @@ Stable for UBFC's seated recordings.
 heart rate read off it. The manifest still carries nullable `sbp_mmhg` and
 `dbp_mmhg` columns so MCD's cuff readings are retained, but nothing reads them and
 no head predicts them.
+
+---
+
+## 11. Running off CUDA, and on device
+
+Two modules in the backbone need a GPU as written: `mamba_ssm.Mamba3`'s scan is a
+Triton kernel with no CPU path, and DF-FFN's `torch.fft` calls need a complex
+tensor type that mobile runtimes do not have. Both have a second implementation,
+selected by a constructor flag and **loading the same weights** -- `state_dict`
+keys and shapes are identical either way, so `strict=True` holds in every
+direction:
+
+| flag | default | alternative |
+|---|---|---|
+| `scan` | `"kernel"` — `mamba_ssm.Mamba3` | `"export"` — `mamba3_export.Mamba3Sequential` |
+| `spectral` | `"fft"` — `torch.fft` | `"matmul"` — `dft.FixedDFT` |
+
+Training always uses the defaults; nothing here changes what is learned. The pair
+`scan="export", spectral="matmul"` runs on CPU with `mamba_ssm` not installed, and
+is what `tools/export_litert.py` converts to LiteRT.
+
+**How close the second implementation is.** On `build/runs/cfmamba/last.pt`:
+
+| comparison | result |
+|---|---|
+| `Mamba3Sequential` vs the Triton kernel, T=300 | pearson 0.999987, max\|d\| 8.6e-3 |
+| `spectral="matmul"` vs `torch.fft`, per module | relative error 3e-7 (float32 epsilon) |
+| whole model, exportable path vs original | pearson 0.999937, max\|d\| 3.5e-4 |
+
+The scan's residual is the kernel's own: it calls PTX `cos.approx.f32`,
+`sin.approx.f32` and `tanh.approx.f32`, which
+`mamba_ssm/ops/triton/mamba3/utils.py` documents as trading accuracy for speed.
+The kernel disagrees with *itself* by pearson 0.99998 when only `chunk_size`
+changes, so 0.999987 is at its noise floor, and where the two differ the pure
+PyTorch version is the more accurate one.
+
+`Mamba3Sequential` does not follow Proposition 1's two-term update literally. It
+uses the kernel's arrangement, which folds both endpoint weights into one scaling
+of `K_t` and is provably the same thing; `tests/test_mamba3_export.py` checks it
+against a separate transcription of Proposition 1 so the equivalence is tested
+rather than assumed. That test runs on CPU and is the regression gate for anyone
+without a GPU.
+
+**What the export costs.** `spectral="matmul"` bakes the transform length in, so
+the model stops being length-agnostic -- which is the property section 4 uses to
+*reject* PTS-FFN's `mode="full"`. It also freezes `GaussianBandMask` to one frame
+rate. Neither matters for a fixed-length inference-only export; both would matter
+for training, which is why the defaults are what they are.
+
+The transform matrices are constants rather than weights, so one instance per
+length serves every block: `dft.share_fixed_dfts`, called at the end of
+`CFMambaPhys.__init__`. Left per-block they came to 3.70 MB of tables against the
+model's 3.73 MB of parameters; shared, they are 0.92 MB. This buys host memory and
+nothing else -- the exported `.tflite` is byte-identical either way, measured,
+because the LiteRT converter deduplicates equal constants on its own. They are
+registered non-persistently in both cases, so no `state_dict` key moves.
+
+**The exported backbone is 21.6 MB, and almost none of it is the model.** The
+scan is a Python loop over time (`mamba3_export.py`), which the converter
+unrolls: 300 steps x 3 paths x 4 blocks becomes 50,684 tensors, of which 9.2 MB
+is tensor *name* strings. The frontend, which has no scan, is 363 KB. Shrinking
+the file means giving the scan a rolled form the converter can keep rolled, not
+trimming weights -- there are only 932,673 of them, 3.7 MB in float32.
+
+**On device the graph is split in two.** All of the activation memory is in the
+stem -- `temporal_differences` alone materialises 225 MB at T=300, and a
+whole-clip forward peaks near 763 MB. But everything through PGA is per-frame
+apart from two short reaches across time, so it tiles: with a halo of 3 frames
+back and 2 forward, a tile reproduces the whole-clip features **bit for bit**, and
+peak memory falls to about 133 MB at a tile of 30. See
+`../rppg_experiment/MODEL_CONVERSION.md` for the measurements and the app-side
+contract, which the model does not carry: the `frame_norm="standardized"`
+statistics are clip-global, the crop is `aggregation/face.py`'s, and the heart
+rate still comes from `postprocess.reported_hr`.

@@ -60,6 +60,17 @@ measurement rather than argument:
 Mamba-3's scan is a Triton kernel with no CPU path, so this is the one module in
 the package that cannot be unit-tested on CPU. Everything above and below it can,
 which is why the package is split the way it is.
+
+**`scan`** picks which implementation runs the recurrence:
+
+  "kernel"    `mamba_ssm.Mamba3`. The default, and the only one to train with.
+  "export"    `mamba3_export.Mamba3Sequential`, the same recurrence in plain
+              PyTorch. Needed to leave CUDA at all -- LiteRT export, CPU tests --
+              and matches the kernel to Pearson 0.99999 on the trained weights.
+              Sequential over T, so slower on a GPU.
+
+The two take the same constructor arguments and have identical `state_dict` keys,
+so one checkpoint loads into either.
 """
 
 from __future__ import annotations
@@ -86,6 +97,11 @@ DEFAULT_ROPE_FRACTION = 1.0
 # paths gives 1, 2 and 4 slices, so at T=300 the shortest sub-sequence is 75
 # frames, or 2.5 s: still longer than one cardiac cycle at 45 bpm.
 DEFAULT_PATHS = 3
+
+SCANS = ("kernel", "export")
+# The kernel stays the default: it is what training runs on, and swapping the
+# default would make every existing result depend on which module was imported.
+DEFAULT_SCAN = "kernel"
 
 DIRECTIONS = ("none", "shared", "separate")
 # Unidirectional for now: it is what stock mamba_ssm gives without a fork, and
@@ -114,9 +130,18 @@ class MultiTemporalMamba(nn.Module):
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         paths: int = DEFAULT_PATHS,
         direction: str = DEFAULT_DIRECTION,
+        scan: str = DEFAULT_SCAN,
     ) -> None:
         super().__init__()
-        from mamba_ssm import Mamba3
+        if scan not in SCANS:
+            raise ValueError(f"unknown scan {scan!r}, expected one of {SCANS}")
+        # Imported here, not at module scope: `mamba_ssm` pulls in Triton and needs
+        # a GPU to be useful, and scan="export" exists precisely for the runs that
+        # have neither.
+        if scan == "kernel":
+            from mamba_ssm import Mamba3 as ScanImpl
+        else:
+            from .mamba3_export import Mamba3Sequential as ScanImpl
 
         if direction not in DIRECTIONS:
             raise ValueError(f"unknown direction {direction!r}, expected one of {DIRECTIONS}")
@@ -131,9 +156,10 @@ class MultiTemporalMamba(nn.Module):
         self.direction = direction
         self.mimo_rank = mimo_rank
         self.chunk_size = chunk_size
+        self.scan = scan
 
         def build() -> nn.Module:
-            scan = Mamba3(
+            scan = ScanImpl(
                 d_model=dim,
                 d_state=d_state,
                 expand=expand,
@@ -201,4 +227,5 @@ class MultiTemporalMamba(nn.Module):
     def extra_repr(self) -> str:
         return (f"dim={self.dim}, paths={self.paths} "
                 f"(slices {[2**i for i in range(self.paths)]}), direction={self.direction}, "
-                f"mimo_rank={self.mimo_rank}, chunk_size={self.chunk_size}")
+                f"mimo_rank={self.mimo_rank}, chunk_size={self.chunk_size}, "
+                f"scan={self.scan}")
