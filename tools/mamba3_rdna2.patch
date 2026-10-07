@@ -1,0 +1,72 @@
+diff --git a/mamba_ssm/ops/triton/mamba3/mamba3_siso_combined.py b/mamba_ssm/ops/triton/mamba3/mamba3_siso_combined.py
+index ca51520..cf5e55d 100644
+--- a/mamba_ssm/ops/triton/mamba3/mamba3_siso_combined.py
++++ b/mamba_ssm/ops/triton/mamba3/mamba3_siso_combined.py
+@@ -5,6 +5,7 @@ Copyright (c) 2025, Dao AI Lab, Goombalab
+ 
+ from __future__ import annotations
+ 
++import functools
+ from dataclasses import dataclass
+ from typing import Optional, Tuple
+ 
+@@ -18,6 +19,21 @@ from mamba_ssm.ops.triton.mamba3.mamba3_siso_bwd import compute_dzdo, compute_dq
+ from mamba_ssm.ops.triton.mamba3.angle_dt import angle_dt_fwd, angle_dt_bwd
+ 
+ 
++@functools.cache
++def _derived_dtype(device: torch.device) -> torch.dtype:
++    """bf16, except on AMD RDNA2 (gfx10xx), which has no bf16 dot instruction.
++
++    There the backward kernels fail to compile with `LLVM ERROR: Cannot select:
++    intrinsic %llvm.amdgcn.fdot2.bf16.bf16`. fp32 compiles, and its outputs and
++    gradients match a plain-PyTorch reference of the same recurrence exactly.
++    On CUDA builds of PyTorch `gcnArchName` holds the device name instead (e.g.
++    'NVIDIA GeForce RTX 3070 Laptop GPU'), which never starts with gfx10, so
++    NVIDIA keeps bf16.
++    """
++    arch = getattr(torch.cuda.get_device_properties(device), "gcnArchName", "")
++    return torch.float32 if arch.startswith("gfx10") else torch.bfloat16
++
++
+ def _triton_alloc_fn(size: int, alignment: int, stream: Optional[int]):
+     """Allocator for Triton runtime memory (TMA descriptors, scratch)."""
+     return torch.empty(size, device="cuda", dtype=torch.int8)
+@@ -387,16 +403,17 @@ def mamba3_siso_combined(
+     all_states_absent = (Input_SSM_State is None) and (Input_K_State is None) and (Input_V_State is None) and (Input_Angle_State is None)
+     assert all_states_present or all_states_absent, "Input states must be provided together or all be None."
+ 
+-    # Typecast all derived tensors to bf16.
++    # Typecast all derived tensors to bf16 (fp32 on RDNA2, see _derived_dtype).
+     # ADT, DT should be in fp32 for stability
+     # Q_bias, K_bias, D should be in fp32 as they are model parameters
+-    Q = Q.to(torch.bfloat16)
+-    K = K.to(torch.bfloat16)
+-    V = V.to(torch.bfloat16)
+-    Trap = Trap.to(torch.bfloat16)
+-    Angles = Angles.to(torch.bfloat16)
++    dtype = _derived_dtype(Q.device)
++    Q = Q.to(dtype)
++    K = K.to(dtype)
++    V = V.to(dtype)
++    Trap = Trap.to(dtype)
++    Angles = Angles.to(dtype)
+     if Z is not None:
+-        Z = Z.to(torch.bfloat16)
++        Z = Z.to(dtype)
+ 
+     return _Mamba3Function.apply(
+         Q, K, V, ADT, DT, Trap, Q_bias, K_bias, Angles, D, Z,
+diff --git a/mamba_ssm/ops/triton/mamba3/mamba3_siso_fwd.py b/mamba_ssm/ops/triton/mamba3/mamba3_siso_fwd.py
+index c81a2c0..9db9f42 100644
+--- a/mamba_ssm/ops/triton/mamba3/mamba3_siso_fwd.py
++++ b/mamba_ssm/ops/triton/mamba3/mamba3_siso_fwd.py
+@@ -591,7 +591,7 @@ def mamba3_siso_fwd(
+     # Allocate output tensors
+     Out = torch.empty((batch, seqlen, nheads, headdim_v), device=device, dtype=V.dtype)
+     if store_states_adt_outv:
+-        SSM_States = torch.zeros((batch, nheads, headdim_v, nchunks * headdim_qk), device=device, dtype=torch.bfloat16)
++        SSM_States = torch.zeros((batch, nheads, headdim_v, nchunks * headdim_qk), device=device, dtype=V.dtype)
+         DA_CS_Store = torch.empty((batch, nheads, seqlen), device=device, dtype=torch.float32)
+         DA_CS_SUM_Store = torch.zeros((batch, nheads, nchunks), device=device, dtype=torch.float32)
+         Out_v = torch.empty((batch, seqlen, nheads, headdim_v), device=device, dtype=V.dtype)

@@ -960,5 +960,34 @@ def readout(manifest: Path, model_path: Path | None, split: str, stride: int | N
         click.echo(table)
 
 
+@cli.command("vitals-rr-mamba")
+@click.option("--table", type=click.Path(exists=True, path_type=Path),
+              default=BUILD_ROOT / "vitals" / "rr_shuffled" / "rr_bpm" / "features.parquet",
+              show_default=True,
+              help="The RR table (`python -m src.vitals.rr_table`); its "
+                   "waves_pp.parquet sits next to it.")
+@click.option("--out", type=click.Path(path_type=Path), default=None,
+              help="Default: rr_mamba/ next to --table.")
+# Defaults copy `src.vitals.rr_mamba`, not imported so --help doesn't load torch; a
+# test keeps them equal.
+@click.option("--epochs", type=int, default=50, show_default=True)
+@click.option("--batch", type=int, default=32, show_default=True)
+@click.option("--lr", type=float, default=2e-5, show_default=True,
+              help="Peak learning rate: linear warmup, then cosine to 1% of it.")
+@click.option("--device", default=None,
+              help="Default: cuda when available (also ROCm), else cpu.")
+def vitals_rr_mamba(table: Path, out: Path | None, epochs: int, batch: int, lr: float,
+                    device: str | None) -> None:
+    """Train the RR network of run AH on tach + ls (src/vitals/rr_mamba.py).
+
+    Trains on split train with a Huber loss, keeps the epoch with the highest pooled
+    dev slope, then scores train, dev and test. Writes the kept checkpoint, every
+    epoch's, the history, the scores, the test estimates and a figure to --out.
+    """
+    from .vitals import rr_mamba
+
+    rr_mamba.main(table, out, epochs, batch, lr, device)
+
+
 if __name__ == "__main__":
     cli()
